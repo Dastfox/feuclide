@@ -1,0 +1,19 @@
+[package]
+name = "fk-audio"
+description = "Sound: decoded clips played as voices whose gain and rate glide, silent without a device"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+fk-math.workspace = true
+fk-app.workspace = true
+bevy_ecs.workspace = true
+kira.workspace = true
+mint.workspace = true
+serde.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

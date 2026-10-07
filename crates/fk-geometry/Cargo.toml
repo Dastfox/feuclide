@@ -1,0 +1,18 @@
+[package]
+name = "fk-geometry"
+description = "Geometry as a trait: points, tangent vectors, isometry groups and metrics, with no Euclidean assumption"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# Exposes the geometry-agnostic property-test battery that every geometry crate runs.
+battery = ["dep:proptest"]
+
+[dependencies]
+fk-math.workspace = true
+proptest = { workspace = true, optional = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,21 @@
+[package]
+name = "fk-tools"
+description = "Offline tools: mesh refinement, golden images"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+fk-math.workspace = true
+fk-geometry.workspace = true
+fk-geometry-euclidean.workspace = true
+fk-assets.workspace = true
+fk-quotient.workspace = true
+fk-render.workspace = true
+fk-scene.workspace = true
+bevy_ecs.workspace = true
+png.workspace = true
+
+[lints]
+workspace = true
