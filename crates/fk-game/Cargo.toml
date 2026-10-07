@@ -1,0 +1,25 @@
+[package]
+name = "fk-game"
+description = "Fucklide's showcase: a guided tour through every space the engine draws, on rails"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+fk-math.workspace = true
+fk-geometry.workspace = true
+fk-geometry-euclidean.workspace = true
+fk-geometry-hyperbolic.workspace = true
+fk-geometry-spherical.workspace = true
+fk-assets.workspace = true
+fk-quotient.workspace = true
+fk-app.workspace = true
+fk-scene.workspace = true
+fk-render.workspace = true
+bevy_ecs.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "fk-quotient"
+description = "Quotient and portal spaces: deck groups, fundamental domains, holonomy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+fk-math.workspace = true
+fk-geometry.workspace = true
+fk-scene.workspace = true
+
+[dev-dependencies]
+fk-geometry-euclidean.workspace = true
+fk-geometry-spherical.workspace = true
+
+[lints]
+workspace = true

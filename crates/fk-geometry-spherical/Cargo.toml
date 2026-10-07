@@ -1,0 +1,17 @@
+[package]
+name = "fk-geometry-spherical"
+description = "Spheres (S², S³) embedded in R³ and R⁴"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+fk-math.workspace = true
+fk-geometry.workspace = true
+
+[dev-dependencies]
+fk-geometry = { workspace = true, features = ["battery"] }
+
+[lints]
+workspace = true

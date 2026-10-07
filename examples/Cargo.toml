@@ -1,0 +1,44 @@
+[package]
+name = "examples"
+description = "Runnable demos: `cargo run --example <name>`"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dev-dependencies]
+fk-math.workspace = true
+fk-geometry.workspace = true
+fk-geometry-euclidean.workspace = true
+fk-geometry-hyperbolic.workspace = true
+fk-geometry-spherical.workspace = true
+fk-assets.workspace = true
+fk-quotient.workspace = true
+fk-app.workspace = true
+fk-scene.workspace = true
+fk-render.workspace = true
+bevy_ecs.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[[example]]
+name = "fly-h3"
+path = "fly-h3/main.rs"
+
+[[example]]
+name = "fly-s3"
+path = "fly-s3/main.rs"
+
+[[example]]
+name = "seifert-weber"
+path = "seifert-weber/main.rs"
+
+[[example]]
+name = "lens-space"
+path = "lens-space/main.rs"
+
+[lints]
+workspace = true
