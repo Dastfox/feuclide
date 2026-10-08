@@ -197,7 +197,7 @@ fn app<G: GpuGeometry>(name: &str, fog: Real, speeds: [Real; 2]) -> App {
     };
     let mut app = App::new();
     app.set_window(WindowConfig {
-        title: format!("Fucklide · {name}"),
+        title: format!("Feuclide · {name}"),
         ..Default::default()
     })
     .add_plugin(ScenePlugin::<G>::default())

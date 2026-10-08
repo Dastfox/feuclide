@@ -1,4 +1,4 @@
-//! Fucklide: a game engine whose core does not assume Euclidean geometry.
+//! Feuclide: a game engine whose core does not assume Euclidean geometry.
 //!
 //! This crate re-exports the engine's crates. Most programs only need the [`prelude`].
 

@@ -4,7 +4,11 @@ description = "Hyperbolic plane and space (H², H³) in the hyperboloid model"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["hyperbolic", "non-euclidean", "geometry", "hyperboloid", "math"]
+categories = ["mathematics", "game-engines"]
 
 [dependencies]
 fk-math.workspace = true

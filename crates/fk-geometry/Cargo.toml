@@ -4,7 +4,11 @@ description = "Geometry as a trait: points, tangent vectors, isometry groups and
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["geometry", "non-euclidean", "isometry", "lie-group", "gamedev"]
+categories = ["mathematics", "game-engines"]
 
 [features]
 # Exposes the geometry-agnostic property-test battery that every geometry crate runs.

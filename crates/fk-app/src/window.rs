@@ -27,7 +27,7 @@ pub struct WindowConfig {
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
-            title: "Fucklide".to_owned(),
+            title: "Feuclide".to_owned(),
             size: (1280, 720),
             frame_rate_cap: None,
             fullscreen: false,

@@ -1,4 +1,4 @@
-//! Offline tools for Fucklide, each a binary of this package:
+//! Offline tools for Feuclide, each a binary of this package:
 //!
 //! - `refine`: splits a binary glTF until no edge, embedded into a geometry, is longer than a
 //!   bound (`fk_assets::refine`), and writes it back as binary glTF.

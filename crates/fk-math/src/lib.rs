@@ -1,4 +1,4 @@
-//! Raw numerics for Fucklide.
+//! Raw numerics for Feuclide.
 //!
 //! Nothing in this crate has geometric meaning: a vector here is a container of numbers, not a
 //! point in space. Geometry lives in `fk-geometry` and the concrete geometry crates.

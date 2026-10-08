@@ -4,7 +4,11 @@ description = "Sound: decoded clips played as voices whose gain and rate glide, 
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["audio", "sound", "gamedev", "kira", "spatial-audio"]
+categories = ["multimedia::audio", "game-development"]
 
 [dependencies]
 fk-math.workspace = true

@@ -1,6 +1,6 @@
 //! Geometry as a trait.
 //!
-//! Fucklide never assumes space is Euclidean. A space is a type implementing [`Geometry`]: it says
+//! Feuclide never assumes space is Euclidean. A space is a type implementing [`Geometry`]: it says
 //! what its points and tangent vectors are, how far apart two points are, how geodesics run, how
 //! vectors are carried along them, and which group of isometries acts on it. Everything above this
 //! crate (scene, renderer, physics) is written against these traits and never names a concrete

@@ -4,7 +4,9 @@ description = "Runnable demos: `cargo run --example <name>`"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
 
 [lib]
 path = "lib.rs"

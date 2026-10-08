@@ -970,6 +970,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "feuclide"
+version = "0.1.0"
+dependencies = [
+ "fk-app",
+ "fk-audio",
+ "fk-geometry",
+ "fk-geometry-euclidean",
+ "fk-math",
+ "fk-physics",
+ "fk-quotient",
+ "fk-render",
+ "fk-scene",
+ "fk-shaders",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1222,22 +1238,6 @@ name = "foreign-types-shared"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
-
-[[package]]
-name = "fucklide"
-version = "0.1.0"
-dependencies = [
- "fk-app",
- "fk-audio",
- "fk-geometry",
- "fk-geometry-euclidean",
- "fk-math",
- "fk-physics",
- "fk-quotient",
- "fk-render",
- "fk-scene",
- "fk-shaders",
-]
 
 [[package]]
 name = "futures-channel"

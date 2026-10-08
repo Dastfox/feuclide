@@ -1,11 +1,11 @@
-# Fucklide — A Non-Euclidean-First Game Engine in Rust
+# Feuclide — A Non-Euclidean-First Game Engine in Rust
 
 > This is the plan the engine was built from. Where the code differs from the sketches below,
 > the code's rustdoc is the authority (see "As built in M0").
 
 ## Context
 
-Every mainstream engine that "does" non-Euclidean spaces cheats: Euclidean core + portal cameras + shader tricks. Fucklide inverts this — the engine core never assumes Euclidean geometry. Geometry is a first-class trait; hyperbolic (H³/H²), spherical/elliptic (S³/S²), Euclidean (E³/E²), quotient/portal spaces, and later Riemannian, Finsler, Taxicab, Galilean/Lorentzian planes are all implementations of the same abstraction. Bevy-like, code-first, 3D-first (2D allowed).
+Every mainstream engine that "does" non-Euclidean spaces cheats: Euclidean core + portal cameras + shader tricks. Feuclide inverts this — the engine core never assumes Euclidean geometry. Geometry is a first-class trait; hyperbolic (H³/H²), spherical/elliptic (S³/S²), Euclidean (E³/E²), quotient/portal spaces, and later Riemannian, Finsler, Taxicab, Galilean/Lorentzian planes are all implementations of the same abstraction. Bevy-like, code-first, 3D-first (2D allowed).
 
 **Decisions made with the user:**
 1. **Rendering: hybrid from day one** — metric-aware rasterization fast path for constant-curvature spaces + GPU geodesic ray-marching as the fully general path, behind one abstraction.
@@ -15,7 +15,7 @@ Every mainstream engine that "does" non-Euclidean spaces cheats: Euclidean core 
 
 ## 1. Workspace Layout
 
-Crates prefixed `fk-`; umbrella crate `fucklide` re-exports everything with a prelude (Bevy-style).
+Crates prefixed `fk-`; umbrella crate `feuclide` re-exports everything with a prelude (Bevy-style).
 
 ```
 Cargo.toml                  # workspace, resolver = "2"
@@ -32,7 +32,7 @@ crates/
   fk-physics              # staged curved-space physics
   fk-assets               # glTF subset loading, embedding + geodesic refinement
   fk-app                  # App builder, winit loop, input, time
-  fucklide                # umbrella + prelude
+  feuclide                # umbrella + prelude
 examples/                 # one demo crate per milestone
 tools/                    # golden-image diff harness, mesh refinement CLI
 ```
