@@ -4,7 +4,11 @@ description = "Quotient and portal spaces: deck groups, fundamental domains, hol
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["quotient", "manifold", "portal", "holonomy", "topology"]
+categories = ["mathematics", "game-engines"]
 
 [dependencies]
 fk-math.workspace = true

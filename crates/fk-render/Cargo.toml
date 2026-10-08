@@ -4,7 +4,11 @@ description = "wgpu renderer: metric-aware rasterization and geodesic ray marchi
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["wgpu", "renderer", "raymarching", "graphics", "non-euclidean"]
+categories = ["rendering::engine", "graphics", "game-engines"]
 
 [dependencies]
 fk-math.workspace = true

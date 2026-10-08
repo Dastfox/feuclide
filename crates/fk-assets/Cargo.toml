@@ -4,7 +4,11 @@ description = "Mesh loading, embedding into curved spaces, geodesic refinement"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["gltf", "mesh", "assets", "gamedev", "geodesic"]
+categories = ["game-development", "graphics"]
 
 [dependencies]
 fk-math.workspace = true

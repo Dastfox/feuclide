@@ -4,7 +4,11 @@ description = "Curved-space physics: geodesic motion, collision, rigid bodies on
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["physics", "geodesic", "collision", "rigid-body", "non-euclidean"]
+categories = ["simulation", "game-engines", "mathematics"]
 
 [dependencies]
 fk-math.workspace = true

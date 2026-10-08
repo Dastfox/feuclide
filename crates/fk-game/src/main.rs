@@ -1,4 +1,4 @@
-//! Fucklide's showcase: a guided tour through every space the engine draws.
+//! Feuclide's showcase: a guided tour through every space the engine draws.
 //!
 //! The camera is on rails. It flies through flat space, then hyperbolic space, then the
 //! 3-sphere, and through the closed manifolds made from each: the flat 3-torus, the
@@ -32,7 +32,7 @@ fn main() {
         .unwrap_or(0);
     let mut app = stations::build(first);
     app.set_window(fk_app::WindowConfig {
-        title: "Fucklide · a tour of the spaces".to_owned(),
+        title: "Feuclide · a tour of the spaces".to_owned(),
         ..Default::default()
     });
     if let Err(error) = app.run() {

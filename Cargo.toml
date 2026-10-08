@@ -6,24 +6,31 @@ members = ["crates/*", "examples", "tools"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.89"
-publish = false
+publish = true
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Dastfox/feuclide"
+homepage = "https://github.com/Dastfox/feuclide"
+keywords = ["gamedev", "non-euclidean", "hyperbolic", "geometry", "graphics"]
+categories = ["game-engines", "graphics", "mathematics"]
 
 [workspace.dependencies]
 # Layering: fk-scene, fk-render and fk-physics depend on fk-geometry only, never on a
 # concrete geometry crate. Concrete geometries are leaves chosen by the application.
-fk-math = { path = "crates/fk-math" }
-fk-geometry = { path = "crates/fk-geometry" }
-fk-geometry-euclidean = { path = "crates/fk-geometry-euclidean" }
-fk-geometry-hyperbolic = { path = "crates/fk-geometry-hyperbolic" }
-fk-geometry-spherical = { path = "crates/fk-geometry-spherical" }
-fk-quotient = { path = "crates/fk-quotient" }
-fk-scene = { path = "crates/fk-scene" }
-fk-shaders = { path = "crates/fk-shaders" }
-fk-render = { path = "crates/fk-render" }
-fk-physics = { path = "crates/fk-physics" }
-fk-assets = { path = "crates/fk-assets" }
-fk-app = { path = "crates/fk-app" }
-fk-audio = { path = "crates/fk-audio" }
+# The version on each path dependency is what crates.io resolves against; the path is what
+# the workspace builds against. Both are required to publish.
+fk-math = { path = "crates/fk-math", version = "0.1.0" }
+fk-geometry = { path = "crates/fk-geometry", version = "0.1.0" }
+fk-geometry-euclidean = { path = "crates/fk-geometry-euclidean", version = "0.1.0" }
+fk-geometry-hyperbolic = { path = "crates/fk-geometry-hyperbolic", version = "0.1.0" }
+fk-geometry-spherical = { path = "crates/fk-geometry-spherical", version = "0.1.0" }
+fk-quotient = { path = "crates/fk-quotient", version = "0.1.0" }
+fk-scene = { path = "crates/fk-scene", version = "0.1.0" }
+fk-shaders = { path = "crates/fk-shaders", version = "0.1.0" }
+fk-render = { path = "crates/fk-render", version = "0.1.0" }
+fk-physics = { path = "crates/fk-physics", version = "0.1.0" }
+fk-assets = { path = "crates/fk-assets", version = "0.1.0" }
+fk-app = { path = "crates/fk-app", version = "0.1.0" }
+fk-audio = { path = "crates/fk-audio", version = "0.1.0" }
 
 nalgebra = "0.35"
 proptest = "1.11"

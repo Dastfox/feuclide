@@ -1,4 +1,4 @@
-# Fucklide
+# Feuclide
 
 A game engine in Rust whose core never assumes Euclidean geometry.
 
@@ -46,7 +46,7 @@ seconds, default 3). `FK_NO_VSYNC=1` lifts the refresh cap.
 | `fk-physics` | Geodesic motion, a character controller, collision, rigid bodies on Lie groups |
 | `fk-assets` | Meshes embedded into curved space, glTF, geodesic refinement, regular tilings |
 | `fk-audio` | Sound (kira), silent without a device |
-| `fucklide` | Umbrella crate |
+| `feuclide` | Umbrella crate |
 | `fk-game` | The showcase tour |
 | `tools` (`fk-tools`) | Golden images (raster against ray march), mesh refinement |
 
@@ -88,3 +88,18 @@ cargo test --workspace
 
 On Linux, sound needs ALSA (`libasound2-dev`); the headless render tests draw with lavapipe
 (`mesa-vulkan-drivers`) and are skipped without an adapter.
+
+## License
+
+Dual-licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
+  <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT License ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
+
+at your option. This is the convention across the Rust ecosystem, including `bevy_ecs`, `wgpu` and
+`winit`, the crates Feuclide builds on.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in
+this work by you, as defined in the Apache-2.0 license, shall be dual-licensed as above, without
+any additional terms or conditions.

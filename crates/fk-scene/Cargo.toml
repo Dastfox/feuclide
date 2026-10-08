@@ -4,7 +4,11 @@ description = "ECS components and schedules: poses as isometries, hierarchy, cam
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["gamedev", "game-engine", "ecs", "scene-graph", "isometry"]
+categories = ["game-engines"]
 
 [dependencies]
 fk-math.workspace = true

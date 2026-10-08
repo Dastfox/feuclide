@@ -4,7 +4,11 @@ description = "Application builder and main loop"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["gamedev", "game-engine", "winit", "window", "input"]
+categories = ["game-engines", "gui"]
 
 [dependencies]
 fk-math.workspace = true

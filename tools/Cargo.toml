@@ -4,7 +4,9 @@ description = "Offline tools: mesh refinement, golden images"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 fk-math.workspace = true
