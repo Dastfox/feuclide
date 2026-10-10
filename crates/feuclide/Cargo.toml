@@ -1,7 +1,9 @@
 [package]
 name = "feuclide"
 description = "A game engine whose core does not assume Euclidean geometry"
-version.workspace = true
+# Not inherited from the workspace: this crate carries the README that crates.io
+# renders, so it releases whenever the README does, independently of the fk-* crates.
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
