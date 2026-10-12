@@ -49,20 +49,20 @@ seconds, default 3). `FK_NO_VSYNC=1` lifts the refresh cap.
 
 | Crate | What |
 |---|---|
-| `fk-math` | f64 numerics, numerically stable series (`sinc`, `sinhc`, …), Minkowski helpers |
-| `fk-geometry` | The core traits: `Geometry`, `GroupElement`, `VectorSpace`, `SampledMetric`, `GpuGeometry`, and a property-test battery |
-| `fk-geometry-euclidean` | E², E³ |
-| `fk-geometry-hyperbolic` | H², H³ in the hyperboloid model |
-| `fk-geometry-spherical` | S², S³ |
-| `fk-quotient` | Quotient and portal spaces: deck groups, Dirichlet domains, holonomy |
-| `fk-app` | App, plugins, schedules, window, input and key mapping |
-| `fk-scene` | Poses as isometries, hierarchy, cameras, floating origin |
-| `fk-shaders` | WGSL modules, one per geometry |
-| `fk-render` | wgpu renderer: metric-aware rasterization and geodesic ray marching in one depth buffer, post effects |
-| `fk-physics` | Geodesic motion, a character controller, collision, rigid bodies on Lie groups |
-| `fk-assets` | Meshes embedded into curved space, glTF, geodesic refinement, regular tilings |
-| `fk-audio` | Sound (kira), silent without a device |
-| `feuclide` | Umbrella crate |
+| [`fk-math`](https://crates.io/crates/fk-math) | f64 numerics, numerically stable series (`sinc`, `sinhc`, …), Minkowski helpers |
+| [`fk-geometry`](https://crates.io/crates/fk-geometry) | The core traits: `Geometry`, `GroupElement`, `VectorSpace`, `SampledMetric`, `GpuGeometry`, and a property-test battery |
+| [`fk-geometry-euclidean`](https://crates.io/crates/fk-geometry-euclidean) | E², E³ |
+| [`fk-geometry-hyperbolic`](https://crates.io/crates/fk-geometry-hyperbolic) | H², H³ in the hyperboloid model |
+| [`fk-geometry-spherical`](https://crates.io/crates/fk-geometry-spherical) | S², S³ |
+| [`fk-quotient`](https://crates.io/crates/fk-quotient) | Quotient and portal spaces: deck groups, Dirichlet domains, holonomy |
+| [`fk-app`](https://crates.io/crates/fk-app) | App, plugins, schedules, window, input and key mapping |
+| [`fk-scene`](https://crates.io/crates/fk-scene) | Poses as isometries, hierarchy, cameras, floating origin |
+| [`fk-shaders`](https://crates.io/crates/fk-shaders) | WGSL modules, one per geometry |
+| [`fk-render`](https://crates.io/crates/fk-render) | wgpu renderer: metric-aware rasterization and geodesic ray marching in one depth buffer, post effects |
+| [`fk-physics`](https://crates.io/crates/fk-physics) | Geodesic motion, a character controller, collision, rigid bodies on Lie groups |
+| [`fk-assets`](https://crates.io/crates/fk-assets) | Meshes embedded into curved space, glTF, geodesic refinement, regular tilings |
+| [`fk-audio`](https://crates.io/crates/fk-audio) | Sound (kira), silent without a device |
+| [`feuclide`](https://crates.io/crates/feuclide) | Umbrella crate |
 | `fk-game` | The showcase tour |
 | `tools` (`fk-tools`) | Golden images (raster against ray march), mesh refinement |
 
