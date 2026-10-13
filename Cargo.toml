@@ -36,6 +36,7 @@ fk-app = { path = "crates/fk-app", version = "0.1.0" }
 fk-audio = { path = "crates/fk-audio", version = "0.1.0" }
 fk-sky = { path = "crates/fk-sky", version = "0.1.0" }
 fk-ui = { path = "crates/fk-ui", version = "0.1.0" }
+fk-flat = { path = "crates/fk-flat", version = "0.1.0" }
 
 nalgebra = "0.35"
 proptest = "1.11"
@@ -56,6 +57,9 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 # S2: first pixel. naga and naga_oil move in lockstep with wgpu (naga_oil 0.23 is on naga 30).
 wgpu = { version = "30.0.1", features = ["naga-ir"] }
+# Drawing on the CPU for an overlay (fk-ui).
+tiny-skia = { version = "0.11.4", default-features = false, features = ["std", "simd"] }
+ab_glyph = "0.2.32"
 naga = "30.0.1"
 naga_oil = { version = "0.23.0", default-features = false }
 encase = "0.13.0"

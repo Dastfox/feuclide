@@ -1,6 +1,6 @@
 // Helpers for deform modules (`fk::deform`), which shape a mesh's vertices on the GPU before
 // their instance's isometry places them: displacement by distance from the eye, stretching,
-// a minimum width on screen, a pull towards a point, a lean towards one.
+// a minimum width on screen, a pull towards a point, a lean towards one, a sway in the wind.
 //
 // Nothing here reads the world block. A deform module reads the values its game put there and
 // passes them in, so every place can move its own way with the same few rules.
@@ -107,4 +107,19 @@ fn lean_towards(
     let pulled = geo_log_origin(pull_towards(position, iso, point, radius, strength));
     let up = clamp(v.y / max(height, 1e-6), 0.0, 1.0);
     return geo_exp_origin(mix(v, pulled, up));
+}
+
+// How strong a gust of a wind rolling across the ground is at `at` (x, z): `wave` is the wind's
+// wave vector across the ground (per unit of length), `rolled` how far it has rolled (radians).
+// About 0.2 to 1.2, uneven along the gusts' fronts.
+fn wind_gust(at: vec2<f32>, wave: vec2<f32>, rolled: f32) -> f32 {
+    let along = dot(at, wave) - rolled;
+    return 0.6 + 0.4 * sin(along) + 0.2 * sin(3.7 * along + 1.3 * at.x - 0.9 * at.y);
+}
+
+// `position` swayed `push` along `way` (a unit direction across the ground), its height dipping
+// a little as it bends, as a blade of grass does.
+fn swayed_by(position: vec4<f32>, push: f32, way: vec2<f32>) -> vec4<f32> {
+    let v = geo_log_origin(position);
+    return geo_exp_origin(v + vec3<f32>(way.x * push, -0.4 * push * push, way.y * push));
 }

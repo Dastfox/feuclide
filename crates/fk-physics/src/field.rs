@@ -1,7 +1,7 @@
 //! Bodies among surfaces given by a distance function: any shape a game can measure, with no
 //! mesh and no closed form.
 
-use fk_geometry::{Geometry, GroupElement};
+use fk_geometry::{Geometry, GroupElement, VectorSpace};
 use fk_math::Real;
 use fk_math::nalgebra::Vector3;
 
@@ -141,6 +141,71 @@ pub fn move_through<G: Geometry>(
     next
 }
 
+/// How far along the geodesic leaving `from` along `direction` (a unit tangent at `from`) the
+/// surface of `field` is, if it is within `reach`: sphere tracing, each step as long as the
+/// field's distance, a hit within `hit` of the surface, at most `steps` steps. The raycast of a
+/// distance field (where a look falls, what is under a point, whether a light reaches it).
+pub fn cast<G: Geometry>(
+    field: &(impl DistanceField<G> + ?Sized),
+    from: &G::Point,
+    direction: &G::Tangent,
+    reach: Real,
+    (hit, steps): (Real, usize),
+) -> Option<Real> {
+    let mut t = 0.0;
+    for _ in 0..steps {
+        let d = field.distance(&G::exp(from, &(*direction * t)));
+        if d < hit {
+            return Some(t);
+        }
+        t += d;
+        if t > reach {
+            return None;
+        }
+    }
+    None
+}
+
+/// The reference frame carried to `p` from the origin.
+fn frame_at<G: Geometry>(p: &G::Point) -> [G::Tangent; 3] {
+    let origin = G::origin();
+    std::array::from_fn(|i| G::parallel_transport(&origin, p, &G::origin_frame(i)))
+}
+
+/// The unit normal of `field`'s surface at `p` (a tangent at `p`, pointing out), from its
+/// gradient by central differences `h` apart along the reference frame carried there; `None`
+/// where the field is flat.
+pub fn normal<G: Geometry>(
+    field: &(impl DistanceField<G> + ?Sized),
+    p: &G::Point,
+    h: Real,
+) -> Option<G::Tangent> {
+    let frame = frame_at::<G>(p);
+    let slope = frame.iter().fold(G::Tangent::zero(), |sum, &e| {
+        let ahead = field.distance(&G::exp(p, &(e * h)));
+        let behind = field.distance(&G::exp(p, &(e * -h)));
+        sum + e * (ahead - behind)
+    });
+    let length = G::inner(p, &slope, &slope).sqrt();
+    (length > 1e-12).then(|| slope * (1.0 / length))
+}
+
+/// How `field`'s surface bends at `p` along the geodesic leaving it along `direction` (a unit
+/// tangent at `p`, along the surface): the field's second derivative there, by central
+/// differences `h` apart. Near the surface it is its curvature along that direction, in
+/// inverse units of distance: positive where it bulges out (a cylinder's side across its axis:
+/// one over its radius), 0 flat.
+pub fn curvature<G: Geometry>(
+    field: &(impl DistanceField<G> + ?Sized),
+    p: &G::Point,
+    direction: &G::Tangent,
+    h: Real,
+) -> Real {
+    let ahead = field.distance(&G::exp(p, &(*direction * h)));
+    let behind = field.distance(&G::exp(p, &(*direction * -h)));
+    (ahead + behind - 2.0 * field.distance(p)) / (h * h)
+}
+
 #[cfg(test)]
 mod tests {
     use fk_geometry_euclidean::{E3, Se3};
@@ -160,6 +225,20 @@ mod tests {
     /// A wall across `z = -10`, solid beyond it.
     fn wall(p: &Point3<Real>) -> Real {
         p.z + 10.0
+    }
+
+    #[test]
+    fn a_ray_finds_the_wall_its_normal_and_a_ball_bends() {
+        let origin = Point3::origin();
+        let ahead = cast::<E3>(&wall, &origin, &-Vector3::z(), 50.0, (1e-4, 64)).unwrap();
+        assert!((ahead - 10.0).abs() < 1e-3, "{ahead}");
+        assert!(cast::<E3>(&wall, &origin, &Vector3::z(), 50.0, (1e-4, 64)).is_none());
+        let up = normal::<E3>(&wall, &Point3::new(1.0, 2.0, -10.0), 1e-3).unwrap();
+        assert!((up - Vector3::z()).norm() < 1e-9, "{up}");
+        let ball = |p: &Point3<Real>| p.coords.norm() - 2.0;
+        let on = Point3::new(0.0, 0.0, 2.0);
+        let bend = curvature::<E3>(&ball, &on, &Vector3::x(), 1e-3);
+        assert!((bend - 0.5).abs() < 1e-3, "one over the radius: {bend}");
     }
 
     #[test]

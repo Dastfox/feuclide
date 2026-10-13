@@ -8,7 +8,9 @@
 //! is reserved for the GPU boundary, after poses have been made camera-relative.
 
 pub mod minkowski;
+pub mod noise;
 pub mod rand;
+pub mod sdf;
 pub mod series;
 
 pub use nalgebra;

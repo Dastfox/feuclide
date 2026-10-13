@@ -3,11 +3,11 @@
 //! Every shape is in the reference frame at the origin: `y` (frame vector 1) is up, `x` and `z`
 //! span the ground. Call [`MeshBuilder::build`] on the result for the app's geometry.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::f64::consts::TAU;
 
 use fk_math::Real;
-use fk_math::nalgebra::Vector3;
+use fk_math::nalgebra::{Vector2, Vector3};
 
 use crate::MeshBuilder;
 
@@ -213,6 +213,125 @@ pub fn sphere(radius: Real, subdivisions: u32) -> MeshBuilder {
         }
     }
     mesh
+}
+
+/// A convex polygon in the xy plane (counter-clockwise) drawn out along z from `z0` to `z1`,
+/// with flat faces.
+pub fn extruded(polygon: &[Vector2<Real>], z0: Real, z1: Real) -> MeshBuilder {
+    let mut mesh = MeshBuilder::new();
+    let n = polygon.len();
+    for (z, normal) in [(z1, Vector3::z()), (z0, -Vector3::z())] {
+        let ids: Vec<u32> = polygon
+            .iter()
+            .map(|p| mesh.vertex(Vector3::new(p.x, p.y, z), normal))
+            .collect();
+        for k in 1..n - 1 {
+            if normal.z > 0.0 {
+                mesh.triangle(ids[0], ids[k], ids[k + 1]);
+            } else {
+                mesh.triangle(ids[0], ids[k + 1], ids[k]);
+            }
+        }
+    }
+    for k in 0..n {
+        let (a, b) = (polygon[k], polygon[(k + 1) % n]);
+        let normal = Vector3::new(b.y - a.y, a.x - b.x, 0.0).normalize();
+        let corners = [
+            Vector3::new(a.x, a.y, z1),
+            Vector3::new(a.x, a.y, z0),
+            Vector3::new(b.x, b.y, z0),
+            Vector3::new(b.x, b.y, z1),
+        ];
+        let [p, q, r, s] = corners.map(|c| mesh.vertex(c, normal));
+        mesh.quad(p, q, r, s);
+    }
+    mesh
+}
+
+/// A cone standing on the origin: `radius` at its foot, `height` tall, `sides` facets, shaded
+/// round.
+pub fn cone(radius: Real, height: Real, sides: u32) -> MeshBuilder {
+    let sides = sides.max(3);
+    let mut mesh = MeshBuilder::new();
+    let rim = |k: u32| {
+        let a = TAU * Real::from(k) / Real::from(sides);
+        Vector3::new(a.cos(), 0.0, a.sin())
+    };
+    let slope = radius / height.max(1e-6);
+    let normal = |out: Vector3<Real>| Vector3::new(out.x, slope, out.z).normalize();
+    for k in 0..sides {
+        let (a, b) = (rim(k), rim(k + 1));
+        // The apex takes the facet's middle, its feet their own way round.
+        let apex = mesh.vertex(Vector3::new(0.0, height, 0.0), normal((a + b).normalize()));
+        let foot_a = mesh.vertex(a * radius, normal(a));
+        let foot_b = mesh.vertex(b * radius, normal(b));
+        mesh.triangle(apex, foot_b, foot_a);
+    }
+    mesh
+}
+
+/// Adds a quad to `mesh` facing up, whichever way its corners turn.
+pub fn up_quad(mesh: &mut MeshBuilder, [a, b, c, d]: [u32; 4]) {
+    let p = |i: u32| mesh.positions()[i as usize];
+    if (p(b) - p(a)).cross(&(p(c) - p(a))).y > 0.0 {
+        mesh.quad(a, b, c, d);
+    } else {
+        mesh.quad(a, d, c, b);
+    }
+}
+
+/// A boulder: an icosahedron stretched by `scale`, shaded round ([`smooth`]).
+pub fn boulder(scale: Vector3<Real>) -> MeshBuilder {
+    let base = sphere(1.0, 0);
+    let mut mesh = MeshBuilder::new();
+    let positions: Vec<Vector3<Real>> = base
+        .positions()
+        .iter()
+        .map(|p| p.component_mul(&scale))
+        .collect();
+    for t in base.indices().as_chunks::<3>().0 {
+        let [a, b, c] = t.map(|i| positions[i as usize]);
+        let mut normal = (b - a).cross(&(c - a)).normalize();
+        let outward = (a + b + c).dot(&normal) > 0.0;
+        if !outward {
+            normal = -normal;
+        }
+        let [i, j, k] = [a, b, c].map(|p| mesh.vertex(p, normal));
+        if outward {
+            mesh.triangle(i, j, k);
+        } else {
+            mesh.triangle(i, k, j);
+        }
+    }
+    smooth(&mesh)
+}
+
+/// `mesh` shaded round: each vertex's normal the mean of the faces meeting where it stands,
+/// weighted by their areas. For things whose every facet stands for a curve (a boulder); a
+/// square-cut thing keeps its own normals.
+pub fn smooth(mesh: &MeshBuilder) -> MeshBuilder {
+    let positions = mesh.positions();
+    let key = |p: &Vector3<Real>| [p.x, p.y, p.z].map(|x| (x * 1e6).round() as i64);
+    let mut sums: BTreeMap<[i64; 3], Vector3<Real>> = BTreeMap::new();
+    for t in mesh.indices().as_chunks::<3>().0 {
+        let [a, b, c] = t.map(|i| positions[i as usize]);
+        // The cross product's length is twice the area: weighted by it.
+        let face = (b - a).cross(&(c - a));
+        for p in [a, b, c] {
+            *sums.entry(key(&p)).or_insert_with(Vector3::zeros) += face;
+        }
+    }
+    let mut out = MeshBuilder::new();
+    for (p, n) in positions.iter().zip(mesh.normals()) {
+        let sum = sums.get(&key(p)).copied().unwrap_or(*n);
+        // Faces wound against their normals: keep the side the vertex showed.
+        let sum = if sum.dot(n) < 0.0 { -sum } else { sum };
+        out.vertex(*p, if sum.norm() > 1e-12 { sum } else { *n });
+    }
+    for t in mesh.indices().as_chunks::<3>().0 {
+        out.triangle(t[0], t[1], t[2]);
+    }
+    out
 }
 
 #[cfg(test)]

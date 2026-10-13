@@ -1,0 +1,23 @@
+[package]
+name = "fk-flat"
+description = "Tools for flat (E³) worlds: standing on a ground, free spots, and the like"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+# Unreleased until its version is bumped and this line removed.
+publish = false
+
+[dependencies]
+fk-math.workspace = true
+fk-geometry.workspace = true
+fk-geometry-euclidean.workspace = true
+fk-physics.workspace = true
+fk-render.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

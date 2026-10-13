@@ -40,7 +40,7 @@ pub mod shapes;
 pub use bvh::BallTree;
 pub use character::{Character, CharacterShape, Collider, Colliders, Ground, Surroundings};
 pub use contact::{MovingBall, Resolved, resolve};
-pub use field::{DistanceField, FieldBody, move_through};
+pub use field::{DistanceField, FieldBody, cast, curvature, move_through, normal};
 pub use ghosts::{Ghost, GhostTree, ghosts};
 pub use grid::BucketGrid;
 pub use motion::{Gravity, advance, transport_frame};

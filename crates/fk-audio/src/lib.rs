@@ -47,6 +47,7 @@ use kira::track::{
 };
 use kira::{AudioManager, AudioManagerSettings, Decibels, DefaultBackend, Mix, Tween};
 
+pub mod gait;
 pub mod synth;
 mod takes;
 

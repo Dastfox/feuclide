@@ -160,6 +160,14 @@ impl Handover {
         self.going = true;
     }
 
+    /// Copies the resource `R` from the old app's world into the new one's, if the old one has
+    /// it: what a [`go`](Self::go)'s carry does for each thing that goes on as it was.
+    pub fn carry<R: Resource + Clone>(old: &World, new: &mut World) {
+        if let Some(resource) = old.get_resource::<R>() {
+            new.insert_resource(resource.clone());
+        }
+    }
+
     /// Whether [`go`](Self::go) was called with an app prepared.
     pub fn is_going(&self) -> bool {
         self.going && self.next.is_some()

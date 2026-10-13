@@ -15,6 +15,7 @@
 
 use bevy_ecs::resource::Resource;
 use fk_math::Real;
+use fk_math::nalgebra::Vector3;
 
 /// Which normal map, by its index in [`NormalMaps`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -205,6 +206,28 @@ pub fn heights_to_normals(
         }
     }
     texels
+}
+
+/// Texture coordinates of `p` (box projection, in the units of `p`), projected along the axis `normal` faces most: the ground
+/// and roofs on x and z, walls across and up, so that grain running along v runs up a trunk.
+pub fn box_uv(p: &Vector3<Real>, normal: &Vector3<Real>) -> [Real; 2] {
+    match axis(normal) {
+        0 => [p.z, p.y],
+        1 => [p.x, p.z],
+        _ => [p.x, p.y],
+    }
+}
+
+/// The axis `normal` faces most along: 0 x, 1 y, 2 z.
+pub fn axis(normal: &Vector3<Real>) -> usize {
+    let a = normal.abs();
+    if a.x >= a.y && a.x >= a.z {
+        0
+    } else if a.y >= a.z {
+        1
+    } else {
+        2
+    }
 }
 
 #[cfg(test)]

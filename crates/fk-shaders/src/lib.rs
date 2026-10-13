@@ -38,7 +38,9 @@
 //! - `fk::march`: the block of one ray-marched scene (bind group 1): the eye's coordinates to
 //!   the scene's, the zoom, the march's budgets and the caller's own values.
 //! - `fk::sdf`: the scene's signed distance field, `sdf_distance` and `sdf_color`. The engine's
-//!   module is a ball of radius 1; a caller replaces it through [`Hooks::sdf`].
+//!   module is a ball of radius 1; a caller replaces it through [`Hooks::sdf`], and may build it
+//!   from `fk::sdf_lib` (boxes, columns, a cell hash, repetition), whose CPU twins are
+//!   `fk_math::sdf`.
 //! - `fk::metric`, composed with `SAMPLED_METRIC` only: the geodesic equation
 //!   `geo_geodesic_accel` the rays are integrated along (RK4) instead of the closed-form
 //!   geodesics. The engine's module is flat; a caller passes a geometry's
@@ -74,6 +76,7 @@ const DISPLACE: (&str, &str) = ("fk/displace.wgsl", include_str!("wgsl/displace.
 const SHADOW: (&str, &str) = ("fk/shadow.wgsl", include_str!("wgsl/shadow.wgsl"));
 const PAINT: (&str, &str) = ("fk/paint.wgsl", include_str!("wgsl/paint.wgsl"));
 const POST: (&str, &str) = ("fk/post.wgsl", include_str!("wgsl/post_bindings.wgsl"));
+const SDF_LIB: (&str, &str) = ("fk/sdf_lib.wgsl", include_str!("wgsl/sdf_lib.wgsl"));
 const MARCH: (&str, &str) = ("fk/march.wgsl", include_str!("wgsl/march.wgsl"));
 /// The engine's `fk::deform`, the identity.
 const DEFORM: (&str, &str) = ("fk/deform.wgsl", include_str!("wgsl/deform.wgsl"));
@@ -329,6 +332,7 @@ pub fn compose_module<'a>(
         PAINT,
         MARCH,
         POST,
+        SDF_LIB,
     ];
     let libraries = hooks
         .libraries
@@ -438,8 +442,10 @@ fn deform(position: vec4<f32>, normal: vec4<f32>, iso: mat4x4<f32>, data: vec4<f
             path: "test/sdf.wgsl",
             source: r"#define_import_path fk::sdf
 #import fk::march::march
+#import fk::sdf_lib::{cuboid, cell_hash}
 fn sdf_distance(q: vec3<f32>) -> f32 {
-    return length(max(abs(q) - march.params[0].xyz, vec3<f32>(0.0))) - 0.01;
+    let lift = f32(cell_hash(1, 2, 3u) & 1u);
+    return cuboid(q, march.params[0].xyz) - 0.01 + lift * 1e-6;
 }
 fn sdf_color(q: vec3<f32>) -> vec3<f32> {
     return march.params[1].rgb;

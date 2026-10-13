@@ -22,6 +22,7 @@ mod app;
 pub mod input;
 pub mod keymap;
 mod pad;
+pub mod persist;
 mod profile;
 mod progress;
 mod runner;

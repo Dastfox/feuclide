@@ -12,6 +12,7 @@
 //! ([`Binding::StickMotion`]).
 
 mod config;
+mod latch;
 mod rebind;
 
 use std::collections::{HashMap, HashSet};
@@ -28,6 +29,7 @@ use fk_math::nalgebra::Vector2;
 use crate::input::{ButtonInput, Direction, RawInput, Stick};
 use crate::{App, Plugin, PreUpdate, Time};
 
+pub use latch::StickLatch;
 pub use rebind::{Part, Rebind, RebindError, RebindTarget, Resolution};
 
 /// The actions of a game.

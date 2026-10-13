@@ -16,6 +16,9 @@ fk-math.workspace = true
 fk-app.workspace = true
 fk-render.workspace = true
 bevy_ecs.workspace = true
+tracing.workspace = true
+tiny-skia.workspace = true
+ab_glyph.workspace = true
 
 [lints]
 workspace = true

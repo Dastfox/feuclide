@@ -442,6 +442,150 @@ fn write_file(path: &Path, text: &str) -> Result<(), String> {
     std::fs::write(path, text).map_err(|error| error.to_string())
 }
 
+/// Whether `report` holds `target` frames a second: on average, and in 95 % of its frames.
+pub fn holds(report: &PerfReport, target: f64) -> bool {
+    report.fps >= target && report.frame.p95 <= 1e3 / target
+}
+
+/// The reports of an earlier run, by scenario: its `summary.toml`, or the directory holding it.
+///
+/// # Errors
+///
+/// When it cannot be read or parsed.
+pub fn read_summary(path: &Path) -> Result<BTreeMap<String, PerfReport>, String> {
+    let path = if path.is_dir() {
+        path.join("summary.toml")
+    } else {
+        path.to_owned()
+    };
+    let text = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    toml::from_str(&text).map_err(|error| error.to_string())
+}
+
+/// Reports as a Markdown table: one scenario a row, against `target` frames a second and the
+/// `baseline`'s.
+pub fn summary_table(
+    reports: &BTreeMap<String, PerfReport>,
+    baseline: Option<&BTreeMap<String, PerfReport>>,
+    target: f64,
+) -> String {
+    let mut table = String::from(
+        "| scenario | fps | frame ms (p50 / p95 / p99) | CPU ms | GPU ms | bound | heaviest pass | draws | |\n\
+         |---|---:|---|---:|---:|---|---|---:|---|\n",
+    );
+    for (name, report) in reports {
+        let gpu = report
+            .gpu
+            .map_or("–".to_owned(), |gpu| format!("{:.2}", gpu.mean));
+        let heaviest = report
+            .passes
+            .iter()
+            .max_by(|a, b| a.1.mean.total_cmp(&b.1.mean))
+            .map_or("–".to_owned(), |(pass, spread)| {
+                format!("{pass} {:.2}", spread.mean)
+            });
+        let verdict = if holds(report, target) {
+            "ok"
+        } else {
+            "**misses**"
+        };
+        let compared =
+            baseline
+                .and_then(|baseline| baseline.get(name))
+                .map_or(String::new(), |before| {
+                    let change = (report.frame.mean / before.frame.mean.max(1e-9) - 1.0) * 100.0;
+                    format!(" ({change:+.0} % frame)")
+                });
+        let _ = writeln!(
+            table,
+            "| {name} | {:.0} | {:.2} / {:.2} / {:.2} | {:.2} | {gpu} | {} | {heaviest} | {:.0} | {verdict}{compared} |",
+            report.fps,
+            report.frame.p50,
+            report.frame.p95,
+            report.frame.p99,
+            report.cpu_work(),
+            report.bound().0,
+            report.draws,
+        );
+    }
+    table
+}
+
+/// Reports as a Markdown page: the machine, the settings (`target` frames a second, `seconds`
+/// recorded after `warmup`), the [`summary_table`] and every pass and schedule.
+pub fn summary_page(
+    reports: &BTreeMap<String, PerfReport>,
+    table: &str,
+    target: Real,
+    (seconds, warmup): (Real, Real),
+) -> String {
+    let mut page = String::from("# Performance\n\n");
+    if let Some(first) = reports.values().next() {
+        let _ = writeln!(
+            page,
+            "{} ({}, {}), {}×{}, {}× multisampling, vsync {}, {} build. Target {} fps; {} s \
+             recorded after {} s in each.\n",
+            first.adapter,
+            first.backend,
+            first.driver,
+            first.width,
+            first.height,
+            first.samples,
+            if first.vsync { "on" } else { "off" },
+            if first.optimized { "release" } else { "debug" },
+            target,
+            seconds,
+            warmup,
+        );
+    }
+    page.push_str(table);
+    page.push_str(
+        "\nCPU ms is the schedules' time without the renderer's wait for the window when the \
+         GPU is the slower; GPU ms is the passes' time from timestamps.\n\n## GPU passes, mean ms\n\n| scenario |",
+    );
+    // The renderer's own passes, then the image effects' as the reports name them.
+    let mut names: Vec<&str> = GPU_PASSES.to_vec();
+    for report in reports.values() {
+        for pass in report.passes.keys() {
+            if !names.contains(&pass.as_str()) {
+                names.push(pass);
+            }
+        }
+    }
+    for pass in &names {
+        let _ = write!(page, " {pass} |");
+    }
+    page.push_str("\n|---|");
+    page.push_str(&"---:|".repeat(names.len()));
+    page.push('\n');
+    for (name, report) in reports {
+        let _ = write!(page, "| {name} |");
+        for &pass in &names {
+            match report.passes.get(pass) {
+                Some(spread) => {
+                    let _ = write!(page, " {:.2} |", spread.mean);
+                }
+                None => page.push_str(" – |"),
+            }
+        }
+        page.push('\n');
+    }
+    page.push_str("\n## CPU schedules, mean ms\n\n| scenario | pre | fixed | update | post | render |\n|---|---:|---:|---:|---:|---:|\n");
+    for (name, report) in reports {
+        let mean = |schedule: &str| report.schedules.get(schedule).map_or(0.0, |s| s.mean);
+        let _ = writeln!(
+            page,
+            "| {name} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} |",
+            mean("pre_update"),
+            mean("fixed_update"),
+            mean("update"),
+            mean("post_update"),
+            mean("render"),
+        );
+    }
+    page
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

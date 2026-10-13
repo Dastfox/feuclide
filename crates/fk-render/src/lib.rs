@@ -107,7 +107,7 @@ pub use march::{
     RayMarchPipeline, RayMarched, RayMarching, SDF_PARAMS, SdfHandle, SdfShader, Sdfs,
 };
 pub use mesh::{Instance, Mesh, MeshBuilder, MeshHandle, MeshInstances, Meshes, Vertex, tangent};
-pub use normal_map::{NormalMap, NormalMaps, heights_to_normals};
+pub use normal_map::{NormalMap, NormalMaps, axis, box_uv, heights_to_normals};
 pub use offscreen::{Image, Offscreen, Paths};
 pub use overlay::Overlay;
 pub use quotient::{QuotientView, Unrepeated};
