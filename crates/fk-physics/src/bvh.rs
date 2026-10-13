@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn a_query_finds_exactly_what_a_scan_finds() {
-        // A spiral of balls, like the Field's towers, and queries all over it.
+        // A spiral of balls, like a field of towers, and queries all over it.
         let balls: Vec<_> = (0..500)
             .map(|i| {
                 let a = Real::from(i) * 2.399_963;

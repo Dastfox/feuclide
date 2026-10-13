@@ -1,0 +1,187 @@
+# The day and the night. Hours in [0, 24), angles in degrees, colours sRGB 0xRRGGBB.
+# Azimuth 0 is along −z, 90 is to its right.
+
+[clock]
+# The hour the app starts at, and whether time starts stopped.
+start_hour = 10.0
+start_paused = false
+# Real seconds for 24 hours at speed 1, while it runs.
+day_seconds = 1440.0
+# Each faster / slower order multiplies / divides the speed by this, up to max_speed (and
+# down to 1 / max_speed).
+speed_step = 2.0
+max_speed = 4096.0
+# Hours per second while scrubbing.
+scrub_hours_per_second = 2.0
+# Hours to jump to: dawn, midday, sunset, midnight.
+presets = [5.6, 13.0, 20.3, 1.0]
+# Speeds for testing only (`ClockInput::test_speed`):
+# normal, a day in 48 s, a day in 6 s.
+test_speeds = [1.0, 30.0, 240.0]
+
+# A body is up from `rise` to `set` (across midnight if set < rise), climbing to
+# `peak_elevation` halfway and turning half a circle from `rise_azimuth`; while down it sinks
+# to `depth` below the horizon. It is drawn as `shape`: "disc", "ring" (a circle line) or
+# "figure", the app's (`fk_render::SkyFigure`), given `figure = [a, b, c, d]`;
+# lines are [sky] `stroke` wide. `radius` is the angular radius; `glow_size` the angle its
+# glow fades over; `disc_brightness` multiplies the key's disc colour (above 1 glares).
+# A long warm day and a short blue night.
+[sun]
+shape = "disc"
+rise = 5.5
+set = 20.5
+peak_elevation = 58.0
+depth = 30.0
+rise_azimuth = -70.0
+radius = 1.3
+glow_size = 14.0
+disc_brightness = 1.6
+
+# The moon rises where the sun sets and sets where it rises: at dusk and at dawn the two are
+# low together, a few degrees apart, the one time they can be seen at once (`[combo]` of
+# world.toml).
+[moon]
+shape = "ring"
+rise = 20.0
+set = 6.0
+peak_elevation = 34.0
+depth = 30.0
+rise_azimuth = 110.0
+radius = 1.6
+glow_size = 7.0
+disc_brightness = 1.0
+
+[stars]
+# Cells of the star grid per radian; about one in seven holds a star.
+density = 140.0
+# The axis the sky turns about, and how many turns it makes in a day.
+pole = [0.0, 0.75, -0.66]
+turns_per_day = 1.0
+
+[sky]
+# Below 1 the zenith colour comes down low; above 1 the horizon colour climbs.
+gradient = 0.55
+# Width of the lines of the sun's star and the moon's ring, in degrees.
+stroke = 0.22
+
+# The colours of the hours, mixed between neighbouring keys round the clock.
+#   light      the directional light: sun by day, moon by night
+#   shadow     what faces away from it
+#   zenith, horizon, below   the sky's gradient (below: under the horizon where nothing is)
+#   sun_disc, sun_glow, moon_disc, moon_glow   the discs and the glow added around them
+#   stars      their brightness, 0 for none
+#   fog_density   fog per metre
+# Around sunrise, sunset and moonrise keep light close to shadow: the light then slides from
+# one body to the other unseen.
+
+[[key]] # midnight
+hour = 0.0
+light = 0x6b7ba0
+shadow = 0x1f2640
+zenith = 0x0b1122
+horizon = 0x1f2a46
+below = 0x161d30
+sun_disc = 0x000000
+sun_glow = 0x000000
+moon_disc = 0xe6ecf6
+moon_glow = 0x1c2744
+stars = 1.0
+fog_density = 0.0007
+
+[[key]] # before dawn
+hour = 4.6
+light = 0x3e4766
+shadow = 0x2a3050
+zenith = 0x1a2440
+horizon = 0x55586e
+below = 0x2a2e44
+sun_disc = 0x000000
+sun_glow = 0x1a1418
+moon_disc = 0xd8e0ee
+moon_glow = 0x141c30
+stars = 0.45
+fog_density = 0.0008
+
+[[key]] # sunrise
+hour = 5.6
+light = 0xe8b494
+shadow = 0x625e86
+zenith = 0x5a6c88
+horizon = 0xe2b9a0
+below = 0x6a6680
+sun_disc = 0xffd9a8
+sun_glow = 0x7a4c34
+moon_disc = 0xb8c0d0
+moon_glow = 0x000000
+stars = 0.0
+fog_density = 0.0009
+
+[[key]] # morning
+hour = 7.5
+light = 0xd9cdbd
+shadow = 0x7e82a8
+zenith = 0x7c90a8
+horizon = 0xc6cfd8
+below = 0x9aa2b2
+sun_disc = 0xfff6e6
+sun_glow = 0x3e3830
+moon_disc = 0x000000
+moon_glow = 0x000000
+stars = 0.0
+fog_density = 0.0005
+
+[[key]] # midday
+hour = 13.0
+light = 0xd9d3ca
+shadow = 0x8a8eb2
+zenith = 0x7a8fa6
+horizon = 0xc9d3dc
+below = 0xa4adba
+sun_disc = 0xfffbf2
+sun_glow = 0x2e2e2c
+moon_disc = 0x000000
+moon_glow = 0x000000
+stars = 0.0
+fog_density = 0.0005
+
+[[key]] # late afternoon
+hour = 18.5
+light = 0xd9c4a7
+shadow = 0x7a74a4
+zenith = 0x76869f
+horizon = 0xd3cdc6
+below = 0xa29eae
+sun_disc = 0xffeccc
+sun_glow = 0x44362a
+moon_disc = 0x000000
+moon_glow = 0x000000
+stars = 0.0
+fog_density = 0.0007
+
+[[key]] # sunset
+hour = 20.3
+light = 0xeea478
+shadow = 0x5c5480
+zenith = 0x55617e
+horizon = 0xd99c80
+below = 0x625a7a
+sun_disc = 0xffb070
+sun_glow = 0x7c4228
+moon_disc = 0xa8b0c4
+moon_glow = 0x000000
+stars = 0.0
+fog_density = 0.0008
+
+[[key]] # dusk
+hour = 21.4
+light = 0x4a5480
+shadow = 0x2a2e4c
+zenith = 0x1c2442
+horizon = 0x474c72
+below = 0x262a44
+sun_disc = 0x000000
+sun_glow = 0x1c1420
+moon_disc = 0xe0e6f2
+moon_glow = 0x141c34
+stars = 0.6
+fog_density = 0.0007

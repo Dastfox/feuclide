@@ -1,5 +1,5 @@
 //! The settle pass: a fullscreen triangle blending the opaque image with the last ones, found
-//! again where the eye's motion took them, after the opaque pass and before the ink (see [`Settle`]).
+//! again where the eye's motion took them, after the opaque pass and before the image effects (see [`Settle`]).
 //!
 //! It draws into one of two pairs of targets of its own (the colour, the distance), reading the
 //! other pair, the last frame's, then copies its colour over the colour target, so every later
@@ -243,7 +243,7 @@ impl SettlePass {
         [halton(i, 2) - 0.5, halton(i, 3) - 0.5]
     }
 
-    /// Settles the colour target, after the opaque pass and before the ink. Does nothing while the
+    /// Settles the colour target, after the opaque pass and before the image effects. Does nothing while the
     /// image does not settle.
     pub fn render(
         &mut self,

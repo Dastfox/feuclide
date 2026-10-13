@@ -15,15 +15,9 @@ fn sdf_color(q: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(1.0);
 }
 
-// Optional in a game's module: whether the surface at `q` is kept out of the mosh patches.
-// Read only when the ray marcher is composed with `SDF_KEPT`.
-fn sdf_kept(q: vec3<f32>) -> bool {
-    return false;
-}
-
-// Optional in a game's module: whether the surface at `q` carries the mosh patches' mosh
-// wherever it is, out of them too (the first patch's). Read only when the ray marcher is
-// composed with `SDF_MOSHED`; `sdf_kept` comes first.
-fn sdf_moshed(q: vec3<f32>) -> bool {
-    return false;
+// Optional in a game's module: the image's alpha on the surface at `q`, from 1 (as without
+// it) to 4, a mark the caller's image effects read. Read only when the ray marcher is composed
+// with `SDF_ALPHA`.
+fn sdf_alpha(q: vec3<f32>) -> f32 {
+    return 1.0;
 }

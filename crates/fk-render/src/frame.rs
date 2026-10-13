@@ -99,7 +99,7 @@ pub struct SkyDisc {
     pub shape: DiscShape,
     /// Angular radius in radians; 0 draws nothing.
     pub radius: Real,
-    /// Width of the lines of a ring or a star, in radians.
+    /// Width of the lines of a ring or a figure, in radians.
     pub stroke: Real,
     /// The disc.
     pub color: Color,
@@ -107,9 +107,6 @@ pub struct SkyDisc {
     pub glow: Color,
     /// Angle of the glow's falloff, in radians.
     pub glow_size: Real,
-    /// How much of it shows over the surfaces in front of it, 0 none (it is behind them, in
-    /// the sky), 1 all of it: drawn over the whole scene, under the [`Lids`].
-    pub over: Real,
 }
 
 impl Default for SkyDisc {
@@ -122,7 +119,6 @@ impl Default for SkyDisc {
             color: Color::BLACK,
             glow: Color::BLACK,
             glow_size: 0.1,
-            over: 0.0,
         }
     }
 }
@@ -130,21 +126,11 @@ impl Default for SkyDisc {
 /// Most bodies [`SkyDiscs`] draws.
 pub const MAX_SKY_DISCS: usize = 24;
 
-/// A body in the sky with a ring round it in its own lines and colour, `ring` times its radius
-/// (0 for none): a star in a ring.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct RingedDisc {
-    /// The body.
-    pub disc: SkyDisc,
-    /// The ring's radius, times the body's; 0 for none.
-    pub ring: Real,
-}
-
 /// More bodies in the [`Sky`] than its sun and moon, as a resource: drawn as those are, behind
 /// every surface, unlit, their glows in the sky and in what far surfaces fade into. The first
 /// [`MAX_SKY_DISCS`] are drawn; none by default.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
-pub struct SkyDiscs(pub Vec<RingedDisc>);
+pub struct SkyDiscs(pub Vec<SkyDisc>);
 
 /// Shadows cast by the directional light of [`Lighting`], as a resource.
 ///
@@ -231,9 +217,9 @@ impl Vsync {
 
 /// The caller-filled part of the shader's world block, as a resource.
 ///
-/// The engine does not know what the values mean: the game writes them (breath fill, eyelid
-/// closure, sink…) and its shaders read `world.values[i]` through accessors of their own. The
-/// block also carries `world.time`, seconds since start, filled in by the engine.
+/// The engine does not know what the values mean: the game writes them and its shaders read
+/// `world.values[i]` through accessors of their own. The block also carries `world.time`,
+/// seconds since start, filled in by the engine.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct WorldUniforms {
     /// The values, four per slot.
@@ -256,51 +242,14 @@ pub enum PostMode {
     Distance,
 }
 
-/// Two lids closing over the image from the top and bottom edges.
-///
-/// The opening between them is almond-shaped: its half-height at a column is proportional to
-/// `1 − curve · s²`, with `s` from −1 at the left edge to 1 at the right, so the lids reach the
-/// corners first and meet in the middle last.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Lids {
-    /// 0 open, 1 shut.
-    pub closure: Real,
-    /// What they are.
-    pub color: Color,
-    /// Width of their soft edge, as a share of the image height.
-    pub softness: Real,
-    /// How much the edges arc, in `[0, 1)`: 0 is straight.
-    pub curve: Real,
-    /// How much darker the lids get towards the image's edges and along their own rims, where
-    /// they meet, as an ambient-occlusion look: 0 for none, 1 for black there.
-    pub occlusion: Real,
-    /// How much the inside of the lids shows the [`LayerRender`] instead of their colour and
-    /// the afterimage: 0 none, 1 only the layer. As much, the lids themselves are not seen: the
-    /// whole image gives way to the layer evenly as they close (by [`closure`](Self::closure)),
-    /// without their edges or their darkening, and the layer is seen through the same lenses
-    /// as the scene ([`PostSettings::warps`](crate::PostSettings::warps)). The layer is drawn
-    /// only while this and [`closure`](Self::closure) are above 0.
-    pub layer: Real,
-}
-
-impl Default for Lids {
-    fn default() -> Self {
-        Self {
-            closure: 0.0,
-            color: Color::BLACK,
-            softness: 0.15,
-            curve: 0.45,
-            occlusion: 0.0,
-            layer: 0.0,
-        }
-    }
-}
-
 /// A second image of the scene with only the entities marked [`OnLayer`](crate::OnLayer) in
-/// it, over a flat colour: no sky, nothing else. The [`Lids`] show it inside them, as much as
-/// [`Lids::layer`] says; it is drawn only then.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// it, over a flat colour: no sky, nothing else; as a resource. Drawn after the opaque pass
+/// while [`enabled`](Self::enabled), into a target of the image's size the post pass's
+/// `fk::grade` reads as `layer` (`fk::post`). The engine gives it no meaning.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct LayerRender {
+    /// Whether it is drawn this frame. Off by default, and then it costs nothing.
+    pub enabled: bool,
     /// What is behind the layer's entities.
     pub clear: Color,
 }
@@ -308,50 +257,48 @@ pub struct LayerRender {
 impl Default for LayerRender {
     fn default() -> Self {
         Self {
+            enabled: false,
             clear: Color::WHITE,
         }
     }
 }
 
-/// An inked look over the image, after the comics of Moebius: dark lines where the depth or the
-/// colour jumps (silhouettes, the horizon, the edges of the bands of light), cross-hatching in
-/// the shadows, a paper tone under it all. The engine gives it no meaning.
-///
-/// It is laid on in a pass of its own, after the opaque pass and before the [`Mosh`], so a
-/// datamosh carries it along with the rest of the image and the post effects (lenses, blur,
-/// saturation) bend and drain it too. Off ([`amount`](Self::amount) 0, the default), that pass
-/// is skipped and the image is exactly as without it. On, it costs one fullscreen pass and a
-/// copy, eight more reads of the colour and depth targets per pixel.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Ink {
-    /// How much of it, 0 none, 1 all.
-    pub amount: Real,
-    /// The lines' colour.
-    pub color: Color,
-    /// How far apart, in pixels, the neighbours are that a line is found against: its width.
-    pub width: Real,
-    /// A line where the distance to the next pixel jumps by this share of the distance.
-    pub depth: Real,
-    /// A line where the brightness (sRGB) jumps by this much from one pixel to the next.
-    pub edges: Real,
-    /// Lines are gone by this distance, in the fog, in units of distance.
-    pub fade: Real,
-    /// How dark the hatching is where it is, 0 none, 1 the lines' colour.
-    pub hatch: Real,
-    /// Pixels between hatching lines.
-    pub spacing: Real,
-    /// Below this brightness (sRGB) the shadows are hatched, crossed twice as dark.
-    pub shadow: Real,
-    /// The paper's tone the image is laid on, and how much of it.
-    pub paper: Color,
-    /// See [`paper`](Self::paper).
-    pub paper_amount: Real,
+/// A frame kept for later, as a resource: the image as the post pass is about to read it (after
+/// the [`ImageEffect`](crate::ImageEffect)s) is copied into a texture of its own whenever
+/// [`capture`](Self::capture) changes, and stays there until the next capture; the post pass's
+/// `fk::grade` reads it as `captured` (`fk::post`), black until the first. The engine gives it
+/// no meaning.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameCapture {
+    /// Change this number to capture the next frame's image.
+    pub capture: u32,
+}
+
+/// The caller's values for the post pass's `fk::grade`, as a resource: `grade.values[i]` in
+/// `fk::post`, opaque to the engine.
+#[derive(Resource, Clone, Debug, PartialEq)]
+pub struct GradeValues {
+    /// The values, four per slot.
+    pub values: [[f32; 4]; GradeValues::SLOTS],
+}
+
+impl GradeValues {
+    /// Number of `vec4` slots.
+    pub const SLOTS: usize = 32;
+}
+
+impl Default for GradeValues {
+    fn default() -> Self {
+        Self {
+            values: [[0.0; 4]; Self::SLOTS],
+        }
+    }
 }
 
 /// The image settled over frames, against the shimmer of what is finer than a pixel: each frame
 /// the ray-marched rays and the raster path's vertices go through another point of their pixels,
-/// and a pass of its own, after the opaque pass and before the [`Ink`] (drawn crisp on the
-/// settled image), blends the image with
+/// and a pass of its own, after the opaque pass and before the
+/// [`ImageEffect`](crate::ImageEffect)s (drawn on the settled image), blends the image with
 /// the last ones, found again where the eye's motion took them (by their distance, exactly
 /// however the eye turned), so that each pixel comes out as the average over it. The engine
 /// gives it no meaning.
@@ -386,157 +333,6 @@ impl Default for Settle {
             moving: 0.5,
         }
     }
-}
-
-impl Default for Ink {
-    fn default() -> Self {
-        Self {
-            amount: 0.0,
-            color: Color::hex(0x1e1a24),
-            width: 1.0,
-            depth: 0.08,
-            edges: 0.12,
-            fade: 600.0,
-            hatch: 0.5,
-            spacing: 5.0,
-            shadow: 0.35,
-            paper: Color::hex(0xf4ead2),
-            paper_amount: 0.15,
-        }
-    }
-}
-
-/// A lens over the image: around a point, the image is drawn from further out (pulled in
-/// towards the point) and turned about it, the more so nearer the point, fading to nothing at
-/// [`radius`](Self::radius). The engine gives it no meaning.
-///
-/// Placed in units of the image height from the image's centre, y up, so it keeps its shape at
-/// any resolution. Applied to the opaque image (or the [`Mosh`]) before every other effect.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Warp {
-    /// The point the image bends around.
-    pub centre: Vector2<Real>,
-    /// How far from it the image bends; 0 for no lens.
-    pub radius: Real,
-    /// How much it pulls the image in: a pixel halfway out shows what is `1 + strength / 4`
-    /// times as far out. Negative pushes the image out.
-    pub strength: Real,
-    /// How far the image turns about the centre at its strongest, in radians, positive
-    /// anticlockwise.
-    pub twist: Real,
-}
-
-impl Warp {
-    /// Number of lenses the post pass draws; [`PostSettings::warps`] past it are ignored.
-    pub const MAX: usize = 4;
-}
-
-impl Default for Warp {
-    fn default() -> Self {
-        Self {
-            centre: Vector2::zeros(),
-            radius: 0.0,
-            strength: 0.0,
-            twist: 0.0,
-        }
-    }
-}
-
-/// A dark closing in from the edges towards the centre.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Tunnel {
-    /// 0 none, 1 the whole image.
-    pub amount: Real,
-    /// What it is.
-    pub color: Color,
-    /// Width of its soft edge, as a share of the half-diagonal.
-    pub softness: Real,
-}
-
-impl Default for Tunnel {
-    fn default() -> Self {
-        Self {
-            amount: 0.0,
-            color: Color::BLACK,
-            softness: 0.3,
-        }
-    }
-}
-
-/// A figure fixed on the image, at its centre unless placed elsewhere, drawn over everything but
-/// the [`Gauge`]s, the [`Lids`] included: lines in the shape of a [`SkyDisc`] (a star's first
-/// point up), a glow around them, and a flash of its colour over the whole image. The engine
-/// gives it no meaning; a game burns a bright light's print into the eyes with it.
-///
-/// Sizes and the centre are in image heights (the centre from the image's centre, y up, like a
-/// [`Warp`]), so it keeps its shape and place at any resolution.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Mark {
-    /// Where it is.
-    pub centre: Vector2<Real>,
-    /// What it looks like.
-    pub shape: DiscShape,
-    /// Its radius; 0 draws no figure.
-    pub radius: Real,
-    /// Width of the lines of a ring or a star.
-    pub stroke: Real,
-    /// The figure's colour. May be brighter than 1.
-    pub color: Color,
-    /// Added around the figure, falling to `1/e` of this over [`glow_size`](Self::glow_size).
-    pub glow: Color,
-    /// Distance of the glow's falloff.
-    pub glow_size: Real,
-    /// How much the figure and its glow show, 0 for not at all.
-    pub opacity: Real,
-    /// How much of the whole image is washed in [`color`](Self::color), 0 none, 1 all of it.
-    pub flash: Real,
-    /// How far the figure is turned about its centre, radians, counter-clockwise (a star's
-    /// points).
-    pub turn: Real,
-    /// A ring drawn round the figure, its radius this many times the figure's, in the same line
-    /// width: 0 for none.
-    pub ring: Real,
-    /// The ring's colour. May be brighter than 1.
-    pub ring_color: Color,
-    /// The ring's glow, added on top of the figure's.
-    pub ring_glow: Color,
-    /// Distance of the ring's glow's falloff.
-    pub ring_glow_size: Real,
-    /// Drawn as the [`Sky`] draws a [`SkyDisc`]: the glow falls off from the centre rather than
-    /// from the lines, and lies under the figure rather than over it, so a disc burnt into the
-    /// eyes looks just as it did in the sky.
-    pub as_sky: bool,
-}
-
-impl Default for Mark {
-    fn default() -> Self {
-        Self {
-            centre: Vector2::zeros(),
-            shape: DiscShape::Disc,
-            radius: 0.0,
-            stroke: 0.004,
-            color: Color::WHITE,
-            glow: Color::BLACK,
-            glow_size: 0.05,
-            opacity: 0.0,
-            flash: 0.0,
-            turn: 0.0,
-            ring: 0.0,
-            ring_color: Color::WHITE,
-            ring_glow: Color::BLACK,
-            ring_glow_size: 0.05,
-            as_sky: false,
-        }
-    }
-}
-
-/// The last frame seen, captured on request and shown behind the [`Lids`].
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Afterimage {
-    /// Change this number to capture the next frame's image.
-    pub capture: u32,
-    /// How much of the captured image shows through the lids, 0 for none.
-    pub strength: Real,
 }
 
 /// A segmented bar drawn over the finished image, filling from the bottom: a readout for
@@ -574,131 +370,6 @@ impl Default for Gauge {
             size: Vector2::new(0.012, 0.2),
             color: Color::WHITE,
             opacity: 0.6,
-        }
-    }
-}
-
-/// A datamosh, like a video whose key frames were lost: one frame is held, and from then on
-/// only the live image's motion reaches it. Every frame each block of the held image moves the
-/// way the camera's motion moves the live image there (reprojected from the depth buffer, one
-/// vector per block), the live image's light and dark bleed into its colours, and blocks of the
-/// live image break back in, region by region, until only the live image is left.
-///
-/// It works on the opaque image, before every other effect of [`PostSettings`].
-///
-/// [`MoshKind::Pixels`] has no blocks: every pixel of the held image moves by the live image's
-/// own motion there, and the live image comes in smoothly, in soft regions, until it has
-/// replaced the held one.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Mosh {
-    /// Blocks or pixels.
-    pub kind: MoshKind,
-    /// Change this number to start a mosh, holding this frame's image.
-    pub start: u32,
-    /// Change this number on a frame where the camera jumps (a teleport), so the jump is not
-    /// read as motion.
-    pub cut: u32,
-    /// How far along: 0 is the held image, and every block is the live image again before 1.
-    /// At 1 or more the mosh is over and costs nothing.
-    pub progress: Real,
-    /// Size of a block, as a share of the image height; with [`MoshKind::Pixels`], the size of
-    /// the soft regions the live image comes in by.
-    pub block: Real,
-    /// How fast the live image's edges bleed into the held colours, per second at `progress`
-    /// 1, in proportion to it before. Only the edges: the held blocks keep their own
-    /// brightness.
-    pub bleed: Real,
-}
-
-/// How a [`Mosh`] moves the held image and lets the live one back in.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum MoshKind {
-    /// One motion vector per block, and the live image breaking back in block by block.
-    #[default]
-    Blocks,
-    /// Every pixel moved by its own motion, and the live image coming back in smoothly.
-    Pixels,
-    /// Macroblocks torn apart: each dragged by the motion at its centre, rounded its own way,
-    /// a few at a time thrown by a corrupt vector (more of them the more the image moves); the
-    /// live image's edges bled in, in full colour, the faster the more it moves, so whatever
-    /// moves leaves trails in the held colours; blocks snapping back to the live image one by
-    /// one, in ragged regions. `block` is the macroblock.
-    Smear,
-}
-
-impl Default for Mosh {
-    fn default() -> Self {
-        Self {
-            kind: MoshKind::Blocks,
-            start: 0,
-            cut: 0,
-            progress: 1.0,
-            block: 1.0 / 40.0,
-            bleed: 1.5,
-        }
-    }
-}
-
-/// A patch of the image that datamoshes without end: inside a disc, every block of the image
-/// is the last frame's, moved the way the camera's motion moved the live image there and
-/// drifting along a slow swirl outwards from the centre, fading back into the live image
-/// smoothly, everywhere and towards its edge. Whatever is drawn in it smears and leaks out of
-/// its outline in blocks. The engine gives it no meaning.
-///
-/// Placed in units of the image height from the image's centre, y up, like a [`Warp`]. Its edge
-/// is ragged, block by block, and crawls slowly. It works on the opaque image, like the [`Mosh`], and not while a
-/// [`Mosh`] runs.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct MoshPatch {
-    /// The disc's centre.
-    pub centre: Vector2<Real>,
-    /// Its radius; 0 for no patch.
-    pub radius: Real,
-    /// Size of a block, as a share of the image height.
-    pub block: Real,
-    /// How fast the blocks drift along the swirl, in image heights per second.
-    pub flow: Real,
-    /// How fast the held image fades back into the live one, per second: at `r`, a smear
-    /// keeps `exp(−r)` of itself after a second.
-    pub refresh: Real,
-    /// How fast the live image's edges bleed into the held colours, per second.
-    pub bleed: Real,
-    /// Arms reaching out of it, evenly round it: tentacles of the same mosh. 0 for none, a
-    /// disc.
-    pub arms: u32,
-    /// How far past its radius the arms reach, in image heights.
-    pub reach: Real,
-    /// How wide an arm is at its root, in image heights; it tapers to nothing at its tip.
-    pub arm_width: Real,
-    /// How far an arm curls along its length, radians at its tip.
-    pub curl: Real,
-    /// The arms' turn about the centre, radians; the app turns them.
-    pub turn: Real,
-    /// How far the arms undulate, radians either way, waves running out along them.
-    pub wave: Real,
-}
-
-impl MoshPatch {
-    /// Number of patches the mosh pass draws; [`PostSettings::mosh_patches`] past it are
-    /// ignored.
-    pub const MAX: usize = 4;
-}
-
-impl Default for MoshPatch {
-    fn default() -> Self {
-        Self {
-            centre: Vector2::zeros(),
-            radius: 0.0,
-            block: 1.0 / 60.0,
-            flow: 0.03,
-            refresh: 1.5,
-            bleed: 1.0,
-            arms: 0,
-            reach: 0.0,
-            arm_width: 0.0,
-            curl: 0.0,
-            turn: 0.0,
-            wave: 0.0,
         }
     }
 }
@@ -747,11 +418,11 @@ impl Default for TextPanel {
 
 /// Settings of the post pass, as a resource.
 ///
-/// The engine gives the effects no meaning: a game decides that the [`Lids`] are eyelids and
-/// the [`Tunnel`] is fainting. They are composed in a fixed order: the [`Warp`]s, blur and streaks,
-/// saturation, posterize, vignette, tunnel, lids (over the [`LayerRender`] when they show it),
-/// the [`Mark`], over the opaque image or the [`Mosh`] made of it. The [`Gauge`]s are drawn
-/// over the result in every [`PostMode`], and the [`TextPanel`] over everything, the
+/// Its effects are composed in a fixed order: where the image is taken from (the caller's
+/// `fk::grade`), blur, the caller's effects after it, saturation, the caller's effects after
+/// it, vignette, the caller's effects over the image, over the opaque image (or what the
+/// [`ImageEffect`](crate::ImageEffect)s made of it). The [`Gauge`]s are drawn over the result
+/// in every [`PostMode`], and the [`TextPanel`] over everything, the
 /// [`Overlay`](crate::Overlay) included.
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub struct PostSettings {
@@ -761,46 +432,14 @@ pub struct PostSettings {
     pub band_spacing: Real,
     /// Blur radius in pixels, 0 for none.
     pub blur: Real,
-    /// The image smeared along lines out of [`streak_centre`](Self::streak_centre), as by
-    /// speed: each pixel averages the image from itself in towards the centre over this share
-    /// of the way, 0 for none. The centre itself stays sharp.
-    pub streak: Real,
-    /// Where the streaks come out of, in image heights from the image's centre, y up.
-    pub streak_centre: Vector2<Real>,
     /// Colour saturation, 1 unchanged, 0 grey.
     pub saturation: Real,
-    /// How far the colours are swapped, 0 unchanged, 1 each turned to its opposite hue at its
-    /// own brightness (reflected through its grey).
-    pub swap: Real,
     /// How much the corners darken, 0 for none.
     pub vignette: Real,
-    /// Steps of brightness, evenly spaced in sRGB, 0 for none: flat bands of paint with every
-    /// colour keeping its hue. Only what was drawn is posterized: the sky behind it, the
-    /// vignette, the tunnel and the lids stay smooth.
-    pub posterize: u32,
-    /// The dark closing in from the edges.
-    pub tunnel: Tunnel,
-    /// The lids.
-    pub lids: Lids,
-    /// The afterimage behind the lids.
-    pub afterimage: Afterimage,
-    /// The datamosh, in place of the opaque image while it lasts.
-    pub mosh: Mosh,
-    /// Patches of the image that datamosh without end, at most [`MoshPatch::MAX`]; none while
-    /// the [`mosh`](Self::mosh) runs.
-    pub mosh_patches: Vec<MoshPatch>,
     /// Readouts over the image, at most [`Gauge::MAX`]. Empty in play.
     pub gauges: Vec<Gauge>,
     /// Text over the image, for debugging. Empty in play.
     pub text: TextPanel,
-    /// The figure at the centre, over everything else in the image.
-    pub mark: Mark,
-    /// Lenses over the image, at most [`Warp::MAX`].
-    pub warps: Vec<Warp>,
-    /// What the lids can show inside them.
-    pub layer: LayerRender,
-    /// The inked look, off by default.
-    pub ink: Ink,
     /// The image settled over frames, off by default.
     pub settle: Settle,
 }
@@ -811,23 +450,10 @@ impl Default for PostSettings {
             mode: PostMode::Image,
             band_spacing: 5.0,
             blur: 0.0,
-            streak: 0.0,
-            streak_centre: Vector2::zeros(),
             saturation: 1.0,
-            swap: 0.0,
             vignette: 0.0,
-            posterize: 0,
-            tunnel: Tunnel::default(),
-            lids: Lids::default(),
-            afterimage: Afterimage::default(),
-            mosh: Mosh::default(),
-            mosh_patches: Vec::new(),
             gauges: Vec::new(),
             text: TextPanel::default(),
-            mark: Mark::default(),
-            warps: Vec::new(),
-            layer: LayerRender::default(),
-            ink: Ink::default(),
             settle: Settle::default(),
         }
     }
@@ -860,21 +486,19 @@ pub(crate) struct WorldBlock {
     pub values: [Vec4f; WorldUniforms::SLOTS],
 }
 
-/// The figure a [`SkyDisc`] is drawn as, oriented on the sky: a star's first point is the one
-/// furthest from the horizon.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// What a [`SkyDisc`] is drawn as, oriented on the sky (up is away from the horizon).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum DiscShape {
     /// A filled disc.
     #[default]
     Disc,
     /// A circle line, [`SkyDisc::stroke`] wide.
     Ring,
-    /// A star drawn in lines [`SkyDisc::stroke`] wide: `points` points on a circle of
-    /// [`SkyDisc::radius`], joined by concave arcs that leave each point along the radius, so
-    /// neighbouring arcs meet in cusps.
-    Star {
-        /// How many.
-        points: u32,
+    /// Lines [`SkyDisc::stroke`] wide drawn by the caller's `fk::figure` ([`SkyFigure`](crate::SkyFigure)), which
+    /// is given the body's radius and `params`; without one, a circle.
+    Figure {
+        /// The figure's own values.
+        params: [f32; 4],
     },
 }
 
@@ -884,8 +508,8 @@ pub(crate) struct DiscBlock {
     pub shape: Vec4f,
     pub color: Vec4f,
     pub glow: Vec4f,
-    /// x: the ring round it, times its radius, 0 for none.
-    pub ring: Vec4f,
+    /// A figure's own values.
+    pub figure: Vec4f,
 }
 
 #[derive(ShaderType)]
@@ -935,34 +559,10 @@ pub(crate) struct PostBlock {
     pub band_spacing: f32,
     pub encode_srgb: u32,
     pub blur: f32,
-    pub lid_color: Vec4f,
-    pub lid_closure: f32,
-    pub lid_softness: f32,
-    pub tunnel: f32,
-    pub tunnel_softness: f32,
-    pub tunnel_color: Vec4f,
     pub saturation: f32,
-    pub swap: f32,
     pub vignette: f32,
-    pub posterize: f32,
-    pub afterimage: f32,
-    pub lid_curve: f32,
-    pub lid_occlusion: f32,
     pub gauge_count: u32,
     pub gauges: [GaugeBlock; Gauge::MAX],
-    pub mark_shape: Vec4f,
-    pub mark_color: Vec4f,
-    pub mark_glow: Vec4f,
-    pub mark_flash: f32,
-    pub lid_layer: f32,
-    pub warp_count: u32,
-    /// Centre, radius and strength of each lens.
-    pub warps: [Vec4f; Warp::MAX],
-    /// The lenses' twists.
-    pub warp_twists: Vec4f,
-    /// The mark's centre, in image heights from the image's centre, y up; its turn; its ring's
-    /// radius as a share of its own.
-    pub mark_centre: Vec4f,
     /// The text panel's top-left corner in pixels, and its scale.
     pub text_layout: Vec4f,
     /// Its columns and lines, 0 when there is no text.
@@ -970,14 +570,11 @@ pub(crate) struct PostBlock {
     pub text_color: Vec4f,
     /// The panel's colour, and its opacity.
     pub text_background: Vec4f,
-    /// The mark's ring's colour.
-    pub mark_ring_color: Vec4f,
-    /// Its glow's colour, and the distance it falls to 1/e over.
-    pub mark_ring_glow: Vec4f,
-    /// The streaks' centre (xy, image heights from the centre, y up) and share (z).
-    pub streak: Vec4f,
-    /// 1 when the mark is drawn as the sky draws its discs, 0 otherwise.
-    pub mark_as_sky: f32,
+}
+
+#[derive(ShaderType)]
+pub(crate) struct GradeBlock {
+    pub values: [Vec4f; GradeValues::SLOTS],
 }
 
 #[derive(ShaderType)]
@@ -986,45 +583,6 @@ pub(crate) struct SettleBlock {
     pub motion: [Vec4f; 4],
     /// Each frame's share, whether the last image is there, the motion held still, nothing.
     pub settings: Vec4f,
-}
-
-#[derive(ShaderType)]
-pub(crate) struct InkBlock {
-    /// How much, its width in pixels, depth and brightness thresholds.
-    pub ink: Vec4f,
-    /// The ink's colour, and the hatching's darkness.
-    pub color: Vec4f,
-    /// The fade distance, the hatching's spacing in pixels, its shadow threshold, the paper's
-    /// amount.
-    pub more: Vec4f,
-    /// The paper's tone.
-    pub paper: Vec4f,
-}
-
-#[derive(ShaderType)]
-pub(crate) struct MoshBlock {
-    /// Columns of the matrix taking this frame's eye coordinates to the last frame's.
-    pub motion: [Vec4f; 4],
-    pub progress: f32,
-    /// In pixels.
-    pub block: f32,
-    pub bleed: f32,
-    /// Seconds since the last frame.
-    pub delta: f32,
-    /// Differs from one mosh to the next.
-    pub seed: f32,
-    pub patch_count: u32,
-    /// Each patch's centre and radius in pixels from the top-left corner, and its block in
-    /// pixels.
-    pub patches: [Vec4f; MoshPatch::MAX],
-    /// Each patch's flow in pixels per second, refresh and bleed per second.
-    pub patch_motion: [Vec4f; MoshPatch::MAX],
-    /// Each patch's arms: how many, their reach and root width in pixels, their curl.
-    pub patch_arms: [Vec4f; MoshPatch::MAX],
-    /// Each patch's arms' turn and wave, radians.
-    pub patch_turn: [Vec4f; MoshPatch::MAX],
-    /// 0 blocks, 1 pixels.
-    pub kind: u32,
 }
 
 #[derive(ShaderType, Clone, Copy, Default)]
@@ -1037,8 +595,13 @@ pub(crate) struct GaugeBlock {
     pub segments: u32,
 }
 
-/// Serializes a block with its WGSL uniform layout.
-pub(crate) fn uniform_bytes<T: ShaderType + encase::internal::WriteInto>(block: &T) -> Vec<u8> {
+/// Serializes a block with its WGSL uniform layout (`encase`), for a uniform buffer of an
+/// [`ImageEffect`](crate::ImageEffect) of the caller's.
+///
+/// # Panics
+///
+/// Never for a block of fixed size.
+pub fn uniform_bytes<T: ShaderType + encase::internal::WriteInto>(block: &T) -> Vec<u8> {
     let mut buffer = encase::UniformBuffer::new(Vec::new());
     buffer
         .write(block)

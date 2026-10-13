@@ -15,8 +15,9 @@ Games shape meshes on the GPU with their own vertex deform and supply their own 
 
 Raw wgpu with a small fixed render graph instead of Bevy's extensible one. Rasterization works in
 any geometry. It adds a **geodesic ray marcher** that shares the depth buffer with the raster
-path; Bevy has nothing like it. Its frame accumulation (`Settle`) is roughly Bevy's TAA. Post
-effects (ink, datamosh, warp) have no Bevy equivalent.
+path; Bevy has nothing like it. Its frame accumulation (`Settle`) is roughly Bevy's TAA. Games add
+fullscreen passes of their own (`ImageEffect`, like a Bevy post-processing node) and their own
+effects inside the post pass (`GradeShader`, a WGSL hook).
 
 ## Links
 

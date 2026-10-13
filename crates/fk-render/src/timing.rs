@@ -15,7 +15,8 @@ use crate::Gpu;
 /// one with each frame read. The passes are, in order: `elsewhere` (the other eye's image, when
 /// there is one), `shadows` (the shadow map and the renderers' offscreen passes, the ray
 /// marcher's half-resolution image among them), `opaque` (the sky and every renderer), `layer`,
-/// `ink`, `mosh`, `post` and `overlay`; a pass that did not run takes next to nothing. The
+/// `settle`, each image effect by its label, `post` and `overlay`; a pass that did not run takes
+/// next to nothing. The
 /// time between the other eye's submission and the frame's is not counted.
 ///
 /// [`serial`]: Self::serial

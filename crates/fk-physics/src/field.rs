@@ -152,7 +152,7 @@ mod tests {
         Se3::exp(&E3::transvection(&Vector3::new(x, y, z)))
     }
 
-    const HENRI: CharacterShape = CharacterShape {
+    const WALKER: CharacterShape = CharacterShape {
         radius: 0.3,
         height: 1.8,
     };
@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn it_stops_short_of_a_wall() {
         let pose = at(0.0, 0.0, 0.0);
-        let next = move_through::<E3>(&pose, HENRI, 0.01, &wall, &Vector3::new(0.0, 0.0, -50.0));
+        let next = move_through::<E3>(&pose, WALKER, 0.01, &wall, &Vector3::new(0.0, 0.0, -50.0));
         let z = next.translation.z;
         assert!(z > -10.0 + 0.3 && z < -10.0 + 0.3 + 0.02, "{z}");
     }
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn it_slides_along_a_wall() {
         let pose = at(0.0, 0.0, -9.0);
-        let next = move_through::<E3>(&pose, HENRI, 0.01, &wall, &Vector3::new(4.0, 0.0, -4.0));
+        let next = move_through::<E3>(&pose, WALKER, 0.01, &wall, &Vector3::new(4.0, 0.0, -4.0));
         let t = next.translation;
         assert!(
             (t.x - 4.0).abs() < 0.05,
@@ -186,10 +186,10 @@ mod tests {
     fn it_is_pushed_out_of_a_ball_it_overlaps() {
         let ball = |p: &Point3<Real>| (p - Point3::new(0.0, 1.0, -0.5)).norm() - 0.5;
         let pose = at(0.0, 0.0, 0.0);
-        let next = move_through::<E3>(&pose, HENRI, 0.01, &ball, &Vector3::zeros());
+        let next = move_through::<E3>(&pose, WALKER, 0.01, &ball, &Vector3::zeros());
         let body = FieldBody::<E3> {
             pose: &next,
-            shape: HENRI,
+            shape: WALKER,
             skin: 0.01,
         };
         assert!(body.room(&ball, &Vector3::zeros()) > 0.0);
@@ -200,7 +200,7 @@ mod tests {
         let far = |_: &Point3<Real>| 1e6;
         let next = move_through::<E3>(
             &at(1.0, 2.0, 3.0),
-            HENRI,
+            WALKER,
             0.01,
             &far,
             &Vector3::new(5.0, -1.0, 2.0),

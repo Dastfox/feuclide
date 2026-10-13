@@ -14,6 +14,9 @@
 //!
 //! The app is built for one geometry, chosen at startup with [`App::set_geometry`]. This crate
 //! never names a concrete geometry.
+//!
+//! Constants live in [`tuning`] files: TOML compiled in, overridden from `FK_TUNING_DIR` and
+//! reloaded on save.
 
 mod app;
 pub mod input;
@@ -24,6 +27,7 @@ mod progress;
 mod runner;
 mod schedule;
 mod time;
+pub mod tuning;
 mod window;
 
 pub use app::{ActiveGeometry, App, Plugin};

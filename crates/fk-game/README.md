@@ -6,7 +6,7 @@ A guided tour through every space the engine draws, with the camera on rails: fl
 hyperbolic space, the 3-sphere, then the closed manifolds made from each (the flat 3-torus, the
 Seifert–Weber space, the Poincaré homology sphere and a lens space). Each station lasts about
 thirty seconds; the next one is built on a thread while this one plays, then given the window,
-and the last image datamoshes into the next.
+and fades in over the last image of the one before.
 
 ```sh
 cargo run -p fk-game --release [-- <station>]

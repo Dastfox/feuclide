@@ -23,16 +23,18 @@
 //! 3. **Opaque.** One pass into a linear HDR colour target and a depth target, multisampled
 //!    ([`Multisampling`], 4× by default) and resolved at the end: first the
 //!    [`Sky`] behind everything (a fullscreen triangle that leaves depth alone), then every
-//!    renderer, then the [`SkyImage`] over all of it when one is hung. The image's alpha is 1 where a surface was drawn and 0 on the sky, so what
-//!    only applies to surfaces (the posterize) follows the image. While a [`Mosh`] runs, it
-//!    then replaces the resolved image, alpha included.
-//! 4. **Post.** A fullscreen pass to the window. [`PostSettings`] selects the image or the
+//!    renderer. The image's alpha is 1 where a surface was drawn (or what a ray-marched
+//!    field's `sdf_alpha` says) and 0 on the sky, so what only applies to surfaces follows the
+//!    image. While a [`LayerRender`] is enabled, it is drawn next: only the entities marked
+//!    [`OnLayer`], over a flat colour.
+//! 4. **Image effects.** The [`Settle`] when on, then the caller's [`ImageEffect`]s in order
+//!    ([`add_image_effect`]): fullscreen passes of its own that rewrite the image (an inked
+//!    look, a datamosh, a crossfade through a [`CarriedImage`]).
+//! 5. **Post.** A fullscreen pass to the window. [`PostSettings`] selects the image or the
 //!    depth buffer decoded to distance, and composes the image's effects (blur, saturation,
-//!    vignette, a [`Tunnel`] closing in, [`Lids`] closing over an [`Afterimage`], [`Warp`]
-//!    lenses). The engine gives them no meaning; the game decides what they are. Debug
-//!    [`Gauge`]s go on top, and a [`TextPanel`] over everything, the [`Overlay`] included. While the lids show it, a [`LayerRender`] is drawn first: only the
-//!    entities marked [`OnLayer`], over a flat colour, for the inside of the lids.
-//! 5. **UI.** Empty: there is no text in play (the [`TextPanel`] is for debugging).
+//!    vignette) with the caller's, a [`GradeShader`] reading its [`GradeValues`], the
+//!    [`FrameCapture`] and the layer. The engine gives them no meaning. Debug [`Gauge`]s go
+//!    on top, and a [`TextPanel`] over everything, the [`Overlay`] included.
 //!
 //! # Shaping meshes on the GPU
 //!
@@ -49,19 +51,19 @@
 //! both ways (`geo_depth_to_distance`, `geo_distance_to_depth`); that is how the ray marcher
 //! composites into the same buffer, and what [`PostMode::Distance`] shows.
 
+mod carried;
 mod color;
 mod cull;
 mod deform;
+mod effect;
 mod elsewhere;
 mod fields;
 mod frame;
 mod gpu;
 mod graph;
-mod ink;
 pub mod light;
 mod march;
 mod mesh;
-mod mosh;
 mod normal_map;
 pub mod offscreen;
 mod overlay;
@@ -76,22 +78,27 @@ mod settle;
 mod shadow;
 pub mod shapes;
 mod sky;
-mod sky_image;
 mod timing;
 
 use std::marker::PhantomData;
 
+use bevy_ecs::schedule::{IntoScheduleConfigs, SystemSet};
 use fk_app::{App, Plugin, Render, Startup, Update};
 use fk_geometry::GpuGeometry;
 
+pub use carried::{CarriedImage, HeldImage};
 pub use color::Color;
 pub use cull::Frustum;
 pub use deform::{CastsNoShadow, Deform, DeformHandle, DeformShader, Deforms};
+pub use effect::{
+    EffectFactory, EffectFrame, EffectSetup, EffectTargets, GradeShader, ImageEffect, SkyFigure,
+    add_image_effect, validate_effect,
+};
 pub use elsewhere::{Elsewhere, SeenBy, ShowsElsewhere};
 pub use frame::{
-    Afterimage, DiscShape, Gauge, Ink, LayerRender, Lids, Lighting, MAX_SKY_DISCS, Mark, Mosh,
-    MoshKind, MoshPatch, Multisampling, PostMode, PostSettings, RenderStats, RingedDisc, Settle,
-    Shadows, Sky, SkyDisc, SkyDiscs, TextPanel, Tunnel, Vsync, Warp, WorldUniforms,
+    DiscShape, FrameCapture, Gauge, GradeValues, LayerRender, Lighting, MAX_SKY_DISCS,
+    Multisampling, PostMode, PostSettings, RenderStats, Settle, Shadows, Sky, SkyDisc, SkyDiscs,
+    TextPanel, Vsync, WorldUniforms, uniform_bytes,
 };
 pub use gpu::{Gpu, Vec2f, Vec4f, matrix_columns};
 pub use graph::SharedDevice;
@@ -100,7 +107,6 @@ pub use march::{
     RayMarchPipeline, RayMarched, RayMarching, SDF_PARAMS, SdfHandle, SdfShader, Sdfs,
 };
 pub use mesh::{Instance, Mesh, MeshBuilder, MeshHandle, MeshInstances, Meshes, Vertex, tangent};
-pub use mosh::{CarriedImage, HeldImage};
 pub use normal_map::{NormalMap, NormalMaps, heights_to_normals};
 pub use offscreen::{Image, Offscreen, Paths};
 pub use overlay::Overlay;
@@ -112,15 +118,25 @@ pub use renderer::{
 pub use screenshot::Screenshots;
 pub use seen::{DiscsSeen, SeenProbe};
 pub use shadow::ShadowView;
-pub use sky_image::SkyImage;
 pub use timing::GpuTimings;
+
+/// The renderer's systems, in the [`Render`] schedule: a system that must see the world as it
+/// is when the frame is drawn, after every other schedule, runs `.before(RenderSystems::Draw)`.
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RenderSystems {
+    /// Draws the frame.
+    Draw,
+}
 
 /// Draws the scene of geometry `G` into the window, with the [`RasterPipeline`] and then the
 /// [`RayMarchPipeline`].
 ///
 /// Inserts [`Meshes`], [`Deforms`], [`Sdfs`], [`RayMarching`], [`Lighting`], [`Shadows`],
-/// [`WorldUniforms`], [`PostSettings`], [`RenderStats`], [`Vsync`], [`Screenshots`], [`CarriedImage`], [`Elsewhere`], [`Overlay`] and [`SkyImage`]. The device ([`Gpu`]) is opened in [`Startup`] once the window exists;
-/// without a window nothing is drawn. Once it draws, it also writes [`DiscsSeen`].
+/// [`WorldUniforms`], [`PostSettings`], [`GradeValues`], [`LayerRender`], [`FrameCapture`],
+/// [`RenderStats`], [`Vsync`], [`Screenshots`], [`CarriedImage`], [`Elsewhere`] and
+/// [`Overlay`]. The device ([`Gpu`]) is opened in [`Startup`] once the window exists, with the
+/// [`GradeShader`] and the [`SkyFigure`] there then; without a window nothing is drawn. Once it
+/// draws, it also writes [`DiscsSeen`].
 ///
 /// For look development, setting `FK_CAPTURE` to a file path saves one screenshot there after
 /// `FK_CAPTURE_AFTER` seconds (3 by default) and exits. For performance tests, setting
@@ -148,6 +164,9 @@ impl<G: GpuGeometry> Plugin for RenderPlugin<G> {
             .init_resource::<Shadows>()
             .init_resource::<WorldUniforms>()
             .init_resource::<PostSettings>()
+            .init_resource::<GradeValues>()
+            .init_resource::<LayerRender>()
+            .init_resource::<FrameCapture>()
             .init_resource::<RenderStats>()
             .init_resource::<Multisampling>()
             .init_resource::<Vsync>()
@@ -155,10 +174,9 @@ impl<G: GpuGeometry> Plugin for RenderPlugin<G> {
             .init_resource::<CarriedImage>()
             .init_resource::<Elsewhere<G>>()
             .init_resource::<Overlay>()
-            .init_resource::<SkyImage>()
             .add_systems(Startup, graph::start::<G>)
             .add_systems(Update, (screenshot::capture_once, perf::record))
-            .add_systems(Render, graph::render::<G>);
+            .add_systems(Render, graph::render::<G>.in_set(RenderSystems::Draw));
         if let Some(capture) = screenshot::CaptureOnce::from_env() {
             app.insert_resource(capture);
         }

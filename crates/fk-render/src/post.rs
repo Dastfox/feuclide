@@ -1,8 +1,10 @@
-//! The post pass: a fullscreen triangle from the opaque pass's targets to the window.
+//! The post pass: a fullscreen triangle from the opaque pass's targets to the window, with the
+//! caller's `fk::grade` ([`GradeShader`]).
 
-use crate::frame::{GaugeBlock, PostBlock, uniform_bytes};
+use crate::effect::{GradeShader, SkyFigure, compose_post};
+use crate::frame::{GaugeBlock, GradeBlock, PostBlock, uniform_bytes};
 use crate::gpu::Vec4f;
-use crate::{DiscShape, Gauge, Gpu, PostMode, PostSettings, TextPanel, Warp};
+use crate::{FrameCapture, Gauge, Gpu, GradeValues, PostMode, PostSettings, TextPanel};
 
 /// Words of the text buffer holding the font: two per glyph, four rows of 8 bits each, the
 /// lowest bit leftmost.
@@ -16,15 +18,17 @@ pub(crate) struct PostPass {
     text_pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     uniform: wgpu::Buffer,
+    /// The caller's [`GradeValues`].
+    grade: wgpu::Buffer,
     /// The font, then the [`TextPanel`]'s characters.
     text: wgpu::Buffer,
     /// The lines last written to it.
     written: Vec<String>,
     sampler: wgpu::Sampler,
     /// Same size and format as the colour target; frames are copied in on request.
-    afterimage: Option<wgpu::Texture>,
-    /// The last [`Afterimage::capture`](crate::Afterimage::capture) served.
-    captured: u32,
+    captured: Option<wgpu::Texture>,
+    /// The last [`FrameCapture::capture`] served.
+    capture: u32,
     bind_group: Option<wgpu::BindGroup>,
     encode_srgb: bool,
 }
@@ -36,14 +40,10 @@ impl PostPass {
         frame_layout: &wgpu::BindGroupLayout,
         output: wgpu::TextureFormat,
         multisampled_depth: bool,
+        (grade, figure): (Option<&GradeShader>, Option<&SkyFigure>),
     ) -> Self {
         let device = &gpu.device;
-        let defs: &[&str] = if multisampled_depth {
-            &["MULTISAMPLED"]
-        } else {
-            &[]
-        };
-        let module = fk_shaders::compose_with(fk_shaders::Shader::Post, geometry, defs)
+        let module = compose_post(grade, geometry, multisampled_depth, figure)
             .unwrap_or_else(|error| panic!("post shader for {geometry}: {error}"));
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("fk post"),
@@ -99,6 +99,16 @@ impl PostPass {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -163,6 +173,12 @@ impl PostPass {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let grade = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fk post grade"),
+            size: uniform_bytes(&grade_block(&GradeValues::default())).len() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let text = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("fk post text"),
             size: (4 * (FONT_WORDS + GRID_WORDS)) as u64,
@@ -184,17 +200,18 @@ impl PostPass {
             text_pipeline,
             layout,
             uniform,
+            grade,
             text,
             written: Vec::new(),
             sampler,
-            afterimage: None,
-            captured: 0,
+            captured: None,
+            capture: 0,
             bind_group: None,
             encode_srgb: !output.is_srgb(),
         }
     }
 
-    /// Points the pass at new targets, after a resize. The afterimage starts black.
+    /// Points the pass at new targets, after a resize. The captured frame starts black.
     pub fn set_targets(
         &mut self,
         gpu: &Gpu,
@@ -202,8 +219,8 @@ impl PostPass {
         depth: &wgpu::TextureView,
         layer: &wgpu::TextureView,
     ) {
-        let afterimage = gpu.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("fk afterimage"),
+        let captured = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("fk captured"),
             size: color.size(),
             mip_level_count: 1,
             sample_count: 1,
@@ -213,7 +230,7 @@ impl PostPass {
             view_formats: &[],
         });
         let color_view = color.create_view(&Default::default());
-        let afterimage_view = afterimage.create_view(&Default::default());
+        let captured_view = captured.create_view(&Default::default());
         self.bind_group = Some(gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("fk post"),
             layout: &self.layout,
@@ -236,7 +253,7 @@ impl PostPass {
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&afterimage_view),
+                    resource: wgpu::BindingResource::TextureView(&captured_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
@@ -246,36 +263,42 @@ impl PostPass {
                     binding: 6,
                     resource: self.text.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.grade.as_entire_binding(),
+                },
             ],
         }));
-        self.afterimage = Some(afterimage);
+        self.captured = Some(captured);
     }
 
-    /// Copies the colour target into the afterimage if a capture was asked for since the last
-    /// one. Call between the opaque pass and the post pass.
+    /// Copies the colour target into the captured frame if a capture was asked for since the
+    /// last one. Call after the image effects and before the post pass.
     pub fn capture(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         color: &wgpu::Texture,
-        settings: &PostSettings,
+        capture: FrameCapture,
     ) {
-        let Some(afterimage) = &self.afterimage else {
+        let Some(captured) = &self.captured else {
             return;
         };
-        if settings.afterimage.capture == self.captured {
+        if capture.capture == self.capture {
             return;
         }
-        self.captured = settings.afterimage.capture;
+        self.capture = capture.capture;
         encoder.copy_texture_to_texture(
             color.as_image_copy(),
-            afterimage.as_image_copy(),
+            captured.as_image_copy(),
             color.size(),
         );
     }
 
-    pub fn prepare(&mut self, gpu: &Gpu, settings: &PostSettings) {
+    pub fn prepare(&mut self, gpu: &Gpu, settings: &PostSettings, grade: &GradeValues) {
         let bytes = uniform_bytes(&block(settings, self.encode_srgb));
         gpu.queue.write_buffer(&self.uniform, 0, &bytes);
+        gpu.queue
+            .write_buffer(&self.grade, 0, &uniform_bytes(&grade_block(grade)));
         if settings.text.lines != self.written {
             self.written.clone_from(&settings.text.lines);
             gpu.queue.write_buffer(
@@ -339,65 +362,10 @@ fn block(settings: &PostSettings, encode_srgb: bool) -> PostBlock {
         band_spacing: settings.band_spacing as f32,
         encode_srgb: encode_srgb.into(),
         blur: settings.blur.max(0.0) as f32,
-        lid_color: Vec4f(settings.lids.color.to_array()),
-        lid_closure: settings.lids.closure.clamp(0.0, 1.0) as f32,
-        lid_softness: settings.lids.softness as f32,
-        tunnel: settings.tunnel.amount.clamp(0.0, 1.0) as f32,
-        tunnel_softness: settings.tunnel.softness as f32,
-        tunnel_color: Vec4f(settings.tunnel.color.to_array()),
         saturation: settings.saturation as f32,
-        swap: settings.swap.clamp(0.0, 1.0) as f32,
         vignette: settings.vignette as f32,
-        posterize: settings.posterize as f32,
-        afterimage: settings.afterimage.strength as f32,
-        lid_curve: settings.lids.curve.clamp(0.0, 0.95) as f32,
-        lid_occlusion: settings.lids.occlusion.clamp(0.0, 1.0) as f32,
         gauge_count: settings.gauges.len().min(Gauge::MAX) as u32,
         gauges: std::array::from_fn(|i| settings.gauges.get(i).map(gauge).unwrap_or_default()),
-        mark_shape: {
-            let mark = &settings.mark;
-            let (kind, points) = match mark.shape {
-                DiscShape::Disc => (0.0, 0.0),
-                DiscShape::Ring => (1.0, 0.0),
-                DiscShape::Star { points } => (2.0, points.clamp(1, 16) as f32),
-            };
-            Vec4f([
-                kind,
-                points,
-                mark.stroke.max(0.0) as f32,
-                mark.radius.max(0.0) as f32,
-            ])
-        },
-        mark_color: {
-            let [r, g, b, _] = settings.mark.color.to_array();
-            Vec4f([r, g, b, settings.mark.opacity.clamp(0.0, 1.0) as f32])
-        },
-        mark_glow: {
-            let [r, g, b, _] = settings.mark.glow.to_array();
-            Vec4f([r, g, b, settings.mark.glow_size.max(0.0) as f32])
-        },
-        mark_flash: settings.mark.flash.clamp(0.0, 1.0) as f32,
-        lid_layer: settings.lids.layer.clamp(0.0, 1.0) as f32,
-        warp_count: settings.warps.len().min(Warp::MAX) as u32,
-        warps: std::array::from_fn(|i| {
-            settings.warps.get(i).map_or_else(Vec4f::default, |warp| {
-                Vec4f([
-                    warp.centre.x as f32,
-                    warp.centre.y as f32,
-                    warp.radius.max(0.0) as f32,
-                    warp.strength as f32,
-                ])
-            })
-        }),
-        warp_twists: Vec4f(std::array::from_fn(|i| {
-            settings.warps.get(i).map_or(0.0, |warp| warp.twist as f32)
-        })),
-        mark_centre: Vec4f([
-            settings.mark.centre.x as f32,
-            settings.mark.centre.y as f32,
-            settings.mark.turn as f32,
-            settings.mark.ring.max(0.0) as f32,
-        ]),
         text_layout: Vec4f([
             settings.text.origin.x as f32,
             settings.text.origin.y as f32,
@@ -420,18 +388,12 @@ fn block(settings: &PostSettings, encode_srgb: bool) -> PostBlock {
             let [r, g, b, _] = settings.text.background.to_array();
             Vec4f([r, g, b, settings.text.opacity.clamp(0.0, 1.0) as f32])
         },
-        mark_ring_color: Vec4f(settings.mark.ring_color.to_array()),
-        mark_ring_glow: {
-            let [r, g, b, _] = settings.mark.ring_glow.to_array();
-            Vec4f([r, g, b, settings.mark.ring_glow_size.max(0.0) as f32])
-        },
-        streak: Vec4f([
-            settings.streak_centre.x as f32,
-            settings.streak_centre.y as f32,
-            settings.streak.clamp(0.0, 0.9) as f32,
-            0.0,
-        ]),
-        mark_as_sky: if settings.mark.as_sky { 1.0 } else { 0.0 },
+    }
+}
+
+fn grade_block(grade: &GradeValues) -> GradeBlock {
+    GradeBlock {
+        values: grade.values.map(Vec4f),
     }
 }
 

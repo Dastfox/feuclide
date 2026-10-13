@@ -1,6 +1,7 @@
 //! The sky pass: a fullscreen triangle drawn first in the opaque pass.
 
 use crate::Gpu;
+use crate::effect::SkyFigure;
 
 pub(crate) struct SkyPass {
     pipeline: wgpu::RenderPipeline,
@@ -11,12 +12,15 @@ impl SkyPass {
         gpu: &Gpu,
         geometry: &str,
         frame_layout: &wgpu::BindGroupLayout,
-        color_format: wgpu::TextureFormat,
-        depth_format: wgpu::TextureFormat,
-        sample_count: u32,
+        (color_format, depth_format, sample_count): (wgpu::TextureFormat, wgpu::TextureFormat, u32),
+        figure: Option<&SkyFigure>,
     ) -> Self {
         let device = &gpu.device;
-        let module = fk_shaders::compose(fk_shaders::Shader::Sky, geometry)
+        let hooks = fk_shaders::Hooks {
+            figure: figure.map(SkyFigure::module),
+            ..Default::default()
+        };
+        let module = fk_shaders::compose_hooked(fk_shaders::Shader::Sky, geometry, &[], &hooks)
             .unwrap_or_else(|error| panic!("sky shader for {geometry}: {error}"));
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("fk sky"),

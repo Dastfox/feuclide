@@ -10,8 +10,6 @@
 
 #[path = "../fly_curved.rs"]
 mod fly_curved;
-#[path = "../key_list.rs"]
-mod key_list;
 
 use fk_geometry_spherical::S3;
 use fk_quotient::Quotient;

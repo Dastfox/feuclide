@@ -10,8 +10,6 @@
 
 #[path = "../fly_curved.rs"]
 mod fly_curved;
-#[path = "../key_list.rs"]
-mod key_list;
 
 use fk_assets::{Cell, Tiling};
 use fk_geometry_hyperbolic::H3;

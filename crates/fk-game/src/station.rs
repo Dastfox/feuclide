@@ -12,19 +12,17 @@ use fk_math::Real;
 use fk_math::nalgebra::{Vector2, Vector3};
 use fk_quotient::{ChartTag, Quotient};
 use fk_render::{
-    CarriedImage, Color, Instance, Lighting, MeshInstances, Meshes, Mosh, MoshKind, PostSettings,
-    QuotientView, RenderPlugin, SharedDevice, Sky, TextPanel, shapes, tangent,
+    CarriedImage, Color, Instance, Lighting, MeshInstances, Meshes, PostSettings, QuotientView,
+    RenderPlugin, SharedDevice, Sky, TextPanel, add_image_effect, shapes, tangent,
 };
 use fk_scene::{Camera, Pose, ScenePlugin, SceneSystems};
 
+use crate::fade::{Fade, FadePass};
+
 /// How long the camera rides through a station before the next one takes over, in seconds.
 const STAY: Real = 30.0;
-/// How long the image moshes before the next station takes the window.
-const LEAVE: Real = 1.0;
-/// How long the next station takes to mosh in through the last image.
-const ARRIVE: Real = 3.0;
-/// The mosh's blocks, as a share of the image height.
-const BLOCK: Real = 0.025;
+/// How long the next station takes to fade in over the last image.
+const ARRIVE: Real = 2.0;
 /// How long the station's name stays in the corner.
 const TITLE: Real = 7.0;
 /// The longest frame the transition counts, so that a stall does not skip it.
@@ -145,18 +143,18 @@ struct Ride {
 struct Passage {
     /// Seconds since the station took the window.
     since: Real,
-    /// Moshing in through the last station's image, how far along; `None` once in, or on the
-    /// first station.
+    /// Fading in over the last station's image, seconds since it began; `None` once in, or on
+    /// the first station.
     arriving: Option<Real>,
-    /// Moshing out, seconds since it began.
-    leaving: Option<Real>,
+    /// The image has been asked for, to carry to the next station.
+    leaving: bool,
     /// The window has been handed on.
     gone: bool,
     /// Skip to the next station as soon as it is ready.
     skip: bool,
 }
 
-/// Put into the next station's world when it takes the window: it moshes in.
+/// Put into the next station's world when it takes the window: it fades in.
 #[derive(Resource)]
 struct Arrived;
 
@@ -226,8 +224,10 @@ pub fn app<G: GpuGeometry>(station: Station<G>, tour: Tour) -> App {
         .insert_resource(tour)
         .init_resource::<Ride>()
         .init_resource::<Passage>()
+        .init_resource::<Fade>()
         .add_systems(Update, (keys, pass))
         .add_systems(FixedUpdate, ride::<G>.before(SceneSystems::Integrate));
+    add_image_effect(&mut app, |setup| Box::new(FadePass::new(setup)));
     let (name, about, far) = (station.name, station.about, station.look.far);
     match station.space {
         Space::Tiling {
@@ -389,8 +389,8 @@ fn keys(map: Res<KeyMap<Keys>>, mut passage: ResMut<Passage>, mut exit: ResMut<A
     }
 }
 
-/// The hand-over: the next station prepared once this one is drawing, the image moshed and
-/// carried at the end of the stay, and this station moshed in if it came after another.
+/// The hand-over: the next station prepared once this one is drawing, the image carried at the
+/// end of the stay, and this station faded in over it if it came after another.
 #[allow(clippy::too_many_arguments)]
 fn pass(
     time: Res<Time>,
@@ -399,7 +399,7 @@ fn pass(
     size: Option<Res<WindowSize>>,
     device: Option<Res<SharedDevice>>,
     mut passage: ResMut<Passage>,
-    mut post: ResMut<PostSettings>,
+    mut fade: ResMut<Fade>,
     mut carried: ResMut<CarriedImage>,
     mut handover: ResMut<Handover>,
     mut commands: Commands,
@@ -409,23 +409,17 @@ fn pass(
     }
     let dt = time.delta().min(LONGEST_FRAME);
     passage.since += dt;
-    let start_mosh = |post: &mut PostSettings| {
-        post.mosh = Mosh {
-            kind: MoshKind::Blocks,
-            start: post.mosh.start.wrapping_add(1),
-            progress: 0.0,
-            block: BLOCK,
-            ..post.mosh
-        };
-    };
-    // Arriving: mosh in through the last station's image.
+    // Arriving: fade in over the last station's image.
     if arrived.is_some() {
         commands.remove_resource::<Arrived>();
-        start_mosh(&mut post);
+        *fade = Fade {
+            start: fade.start.wrapping_add(1),
+            progress: 0.0,
+        };
         passage.arriving = Some(0.0);
     } else if let Some(since) = passage.arriving {
         let since = since + dt;
-        post.mosh.progress = (since / ARRIVE).min(1.0);
+        fade.progress = (since / ARRIVE).min(1.0);
         passage.arriving = (since < ARRIVE).then_some(since);
     }
     // The next station is built while this one plays, on this one's device, once it has one.
@@ -445,28 +439,17 @@ fn pass(
             app
         });
     }
-    // Leaving: the image moshes for a moment, is read back, and goes with the window.
-    match passage.leaving {
-        None => {
-            let due = passage.since >= STAY - LEAVE || passage.skip;
-            if due && handover.is_ready() && passage.arriving.is_none() {
-                start_mosh(&mut post);
-                passage.leaving = Some(0.0);
-            }
-        }
-        Some(since) => {
-            let since = since + dt;
-            passage.leaving = Some(since);
-            if since >= LEAVE {
-                carried.request();
-                handover.go(carry);
-                passage.gone = true;
-            }
-        }
+    // Leaving: the image is read back, and goes with the window.
+    let due = passage.since >= STAY || passage.skip;
+    if due && handover.is_ready() && passage.arriving.is_none() {
+        carried.request();
+        handover.go(carry);
+        passage.leaving = true;
+        passage.gone = true;
     }
 }
 
-/// What the station left gives the next: its last image, to mosh in through.
+/// What the station left gives the next: its last image, to fade in over.
 fn carry(old: &mut World, new: &mut World) {
     if let Some(image) = old.resource_mut::<CarriedImage>().take() {
         new.resource_mut::<CarriedImage>().hold(image);
@@ -476,7 +459,7 @@ fn carry(old: &mut World, new: &mut World) {
 
 /// The station's name in the corner while it opens.
 fn title(passage: &Passage, post: &mut PostSettings, name: &str, about: &str) {
-    if passage.since < TITLE && passage.leaving.is_none() {
+    if passage.since < TITLE && !passage.leaving {
         post.text = TextPanel {
             lines: vec![name.to_owned(), about.to_owned()],
             origin: Vector2::new(24.0, 24.0),

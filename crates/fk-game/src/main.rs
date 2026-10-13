@@ -4,8 +4,8 @@
 //! 3-sphere, and through the closed manifolds made from each: the flat 3-torus, the
 //! Seifert–Weber space, the Poincaré homology sphere and a lens space. Each space is a
 //! station of about thirty seconds, named in the corner as it opens. The next station is
-//! built on a thread while this one plays, then given the window, and the last image of this
-//! one datamoshes into the next. After the last station the tour starts again.
+//! built on a thread while this one plays, then given the window, and fades in over the last image
+//! of this one. After the last station the tour starts again.
 //!
 //! `cargo run -p fk-game --release [-- <station>]`, the stations numbered from 0. N goes on to
 //! the next station, Esc quits. Nothing else steers: the camera is locked to its path.
@@ -14,6 +14,7 @@
 //! going from H³ to S³ is a [`Handover`](fk_app::Handover) to a new app, on the same GPU
 //! device.
 
+mod fade;
 mod station;
 mod stations;
 

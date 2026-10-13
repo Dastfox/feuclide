@@ -12,7 +12,7 @@
 //! [`refine`] splits the flat mesh until no edge is longer than a bound measured between the
 //! embedded ends (geodesic distance), keeping it conforming (no T-junctions). In E³ the
 //! geodesic is the edge itself, and refining only makes a mesh fine enough to be displaced
-//! (a breathing ground). `tools/` refines a file offline: `cargo run -p fk-tools --bin refine`.
+//! (a ground that moves). `tools/` refines a file offline: `cargo run -p fk-tools --bin refine`.
 //!
 //! [`tiling`] makes the regular tilings of space by cubes and dodecahedra, in whichever
 //! geometry has them.

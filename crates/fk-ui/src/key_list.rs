@@ -1,6 +1,6 @@
-//! The list of every key over the image, F1 to show it and F1 again to hide it, as in the
-//! game's debug builds. Each example's key enum implements [`Listed`] and calls [`add`]; the
-//! list follows the bindings, so it always shows the keys the example reads.
+//! The list of every key over the image, one action to show it and again to hide it: a key
+//! enum implements [`Listed`] and the app calls [`add`]. The list follows the bindings, so it
+//! always shows the keys the app reads.
 
 use bevy_ecs::prelude::*;
 use fk_app::keymap::{Action, KeyMap};
@@ -17,7 +17,8 @@ pub trait Listed: Action {
     fn describe(self) -> &'static str;
 }
 
-/// Shows the list of `A`'s keys under `title` while [`Listed::HELP`] has toggled it on.
+/// Shows the list of `A`'s keys under `title`, in the [`TextPanel`], while [`Listed::HELP`] has
+/// toggled it on.
 pub fn add<A: Listed>(app: &mut App, title: &'static str) {
     app.add_systems(
         PostUpdate,
@@ -49,7 +50,8 @@ pub fn add<A: Listed>(app: &mut App, title: &'static str) {
     );
 }
 
-fn lines<A: Listed>(map: &KeyMap<A>, title: &str) -> Vec<String> {
+/// The list's lines: the title, then a key (or keys) and what it does on each.
+pub fn lines<A: Listed>(map: &KeyMap<A>, title: &str) -> Vec<String> {
     let keys = |action: A| {
         let names: Vec<String> = map
             .bindings()

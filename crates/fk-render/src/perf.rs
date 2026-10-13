@@ -39,17 +39,31 @@ pub(crate) fn enabled() -> bool {
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PerfHold(pub bool);
 
-/// The names of the GPU's passes, in the order the renderer runs them (see [`GpuTimings`]).
-pub const GPU_PASSES: [&str; 8] = [
+/// The names of the renderer's own GPU passes, in the order it runs them (see [`GpuTimings`]);
+/// the caller's [`ImageEffect`](crate::ImageEffect)s run between `settle` and `post`, under
+/// their own labels.
+pub const GPU_PASSES: [&str; 7] = [
     "elsewhere",
     "shadows",
     "opaque",
     "layer",
-    "ink",
-    "mosh",
+    "settle",
     "post",
     "overlay",
 ];
+
+/// The passes timed in `samples`: the renderer's own, then the others in the order first met.
+fn pass_names(samples: &[Sample]) -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = GPU_PASSES.to_vec();
+    for timings in samples.iter().filter_map(|s| s.gpu.as_ref()) {
+        for (name, _) in &timings.passes {
+            if !names.contains(name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
 
 /// Durations summed up over a recording, milliseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -342,7 +356,7 @@ fn report(recording: &PerfRecording) -> PerfReport {
         passes: if timed.is_empty() {
             BTreeMap::new()
         } else {
-            GPU_PASSES
+            pass_names(samples)
                 .iter()
                 .map(|name| ((*name).to_owned(), Spread::of(pass(name))))
                 .collect()
@@ -381,7 +395,8 @@ fn frames_csv(samples: &[Sample]) -> String {
     let mut csv = String::from(
         "frame_ms,cpu_ms,pre_update_ms,fixed_update_ms,fixed_steps,update_ms,post_update_ms,render_ms,gpu_ms",
     );
-    for pass in GPU_PASSES {
+    let names = pass_names(samples);
+    for pass in &names {
         let _ = write!(csv, ",{pass}_ms");
     }
     csv.push_str(",drawn,culled,draws\n");
@@ -403,7 +418,7 @@ fn frames_csv(samples: &[Sample]) -> String {
         if let Some(gpu) = &sample.gpu {
             let _ = write!(csv, "{:.4}", ms(gpu.total()));
         }
-        for pass in GPU_PASSES {
+        for &pass in &names {
             csv.push(',');
             if let Some(gpu) = &sample.gpu {
                 let seconds = gpu
@@ -481,7 +496,7 @@ mod tests {
         assert!((report.fps - 100.0).abs() < 1e-9);
         assert!((report.gpu.unwrap().mean - 8.0).abs() < 1e-9);
         assert!((report.passes["opaque"].mean - 7.0).abs() < 1e-9);
-        assert_eq!(report.passes["ink"].max, 0.0);
+        assert_eq!(report.passes["settle"].max, 0.0);
         // The GPU's 8 ms is longer than the CPU's 2 ms outside the wait: bound by the GPU.
         assert_eq!(report.bound().0, "GPU");
         let text = toml::to_string(&report).unwrap();

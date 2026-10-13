@@ -1,6 +1,6 @@
 //! The render graph: surface, targets and the fixed pass order
-//! (the other eye's image, when there is one) → visibility → opaque → layer (while the lids show
-//! it) → settle → ink → mosh → post → UI.
+//! (the other eye's image, when there is one) → visibility → opaque → layer (while it is
+//! enabled) → settle → the caller's image effects → post → UI.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -11,16 +11,18 @@ use fk_math::Real;
 use fk_math::nalgebra::{Matrix4, Rotation3, Unit, Vector3};
 use fk_scene::ActiveView;
 
+use crate::carried::CarriedImage;
+use crate::effect::{
+    EffectFactories, EffectFrame, EffectSetup, EffectTargets, GradeShader, ImageEffect, SkyFigure,
+};
 use crate::elsewhere::{Elsewhere, ElsewhereShared, ElsewhereTargets};
 use crate::frame::{
     DiscBlock, LightingBlock, MAX_SKY_DISCS, PointLightBlock, SkyDiscs, ViewBlock, WorldBlock,
     uniform_bytes,
 };
 use crate::gpu::{Vec2f, Vec4f, matrix_columns};
-use crate::ink::InkPass;
 use crate::light::{MAX_POINT_LIGHTS, PointLight};
 use crate::mesh::tangent;
-use crate::mosh::{CarriedImage, MoshPass};
 use crate::overlay::{Overlay, OverlayPass};
 use crate::post::PostPass;
 use crate::renderer::{FrameBindings, FrameView, GeometryRenderer, RendererFactory, RendererSetup};
@@ -29,11 +31,11 @@ use crate::seen::{DiscProbe, SeenProbe};
 use crate::settle::SettlePass;
 use crate::shadow::{SHADOW_FORMAT, ShadowMap, ShadowView};
 use crate::sky::SkyPass;
-use crate::sky_image::{SkyImage, SkyImagePass};
 use crate::timing::GpuTimer;
 use crate::{Color, DiscShape, SkyDisc};
 use crate::{
-    Frustum, Gpu, Lighting, Multisampling, PostSettings, RenderStats, Shadows, Vsync, WorldUniforms,
+    FrameCapture, Frustum, Gpu, GradeValues, LayerRender, Lighting, Multisampling, PostSettings,
+    RenderStats, Shadows, Vsync, WorldUniforms,
 };
 
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -78,13 +80,13 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 struct Targets {
-    /// The resolved image the post pass reads.
+    /// The resolved image the image effects and the post pass read.
     color: wgpu::Texture,
     color_view: wgpu::TextureView,
     /// What the opaque pass draws into when multisampling, resolved into `color`.
     multisampled: Option<wgpu::TextureView>,
     depth: wgpu::TextureView,
-    /// The layer render, read by the post pass inside the lids.
+    /// The layer render, read by the post pass.
     layer: LayerTargets,
     /// The other eye's image, read by the windows onto it.
     elsewhere: ElsewhereTargets,
@@ -117,19 +119,26 @@ pub(crate) struct RenderState<G: GpuGeometry> {
     sample_count: u32,
     renderers: Vec<Box<dyn GeometryRenderer<G>>>,
     sky: SkyPass,
-    sky_image: SkyImagePass,
     shadow_map: ShadowMap,
     settle: SettlePass,
-    ink: InkPass,
-    mosh: MoshPass,
+    /// The caller's image effects, in the order they run.
+    effects: Vec<Box<dyn ImageEffect>>,
     post: PostPass,
     overlay: OverlayPass,
     elsewhere: ElsewhereShared,
     discs: DiscProbe,
     /// Times the passes for a performance recording.
     timer: GpuTimer,
-    /// The eye of the last frame drawn, for the mosh's motion.
+    /// The eye of the last frame drawn, for the settling's and the effects' motion.
     last_eye: Option<G::Isometry>,
+}
+
+/// What the caller adds to the renderer, read when the device opens.
+struct Additions<'a, G> {
+    renderers: &'a [RendererFactory<G>],
+    effects: &'a EffectFactories,
+    grade: Option<&'a GradeShader>,
+    figure: Option<&'a SkyFigure>,
 }
 
 /// Opens the device on the window, or takes the [`SharedDevice`] when there is one. Without
@@ -150,19 +159,28 @@ pub(crate) fn start<G: GpuGeometry>(world: &mut World) {
     let factories = world
         .remove_resource::<RendererFactories<G>>()
         .unwrap_or_default();
+    let effects = world
+        .remove_resource::<EffectFactories>()
+        .unwrap_or_default();
     if let Some(progress) = world.get_resource::<fk_app::Progress>() {
         progress.step("compiling the shaders");
     }
+    let additions = Additions {
+        renderers: &factories.0,
+        effects: &effects,
+        grade: world.get_resource::<GradeShader>(),
+        figure: world.get_resource::<SkyFigure>(),
+    };
     let state = match (shared, window) {
         (Some(shared), _) => Ok(RenderState::<G>::on(
             shared,
             world.get_resource::<WindowSize>().copied(),
             samples,
-            &factories.0,
+            &additions,
         )),
         (None, Some(window)) => {
             let size = *world.resource::<WindowSize>();
-            RenderState::<G>::open(window, size, samples, &factories.0)
+            RenderState::<G>::open(window, size, samples, &additions)
         }
         (None, None) => return,
     };
@@ -213,7 +231,7 @@ impl<G: GpuGeometry> RenderState<G> {
         window: WindowHandle,
         size: WindowSize,
         samples: u32,
-        factories: &[RendererFactory<G>],
+        additions: &Additions<'_, G>,
     ) -> Result<Self, String> {
         let mut descriptor =
             wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone()));
@@ -279,7 +297,7 @@ impl<G: GpuGeometry> RenderState<G> {
             config,
             surface: Arc::default(),
         };
-        Ok(Self::build(shared, Some(surface), size, samples, factories))
+        Ok(Self::build(shared, Some(surface), size, samples, additions))
     }
 
     /// Opens on a shared device, without the surface until it is given up.
@@ -287,14 +305,14 @@ impl<G: GpuGeometry> RenderState<G> {
         shared: SharedDevice,
         size: Option<WindowSize>,
         samples: u32,
-        factories: &[RendererFactory<G>],
+        additions: &Additions<'_, G>,
     ) -> Self {
         let size = size.unwrap_or(WindowSize {
             width: shared.config.width,
             height: shared.config.height,
             scale_factor: 1.0,
         });
-        Self::build(shared, None, size, samples, factories)
+        Self::build(shared, None, size, samples, additions)
     }
 
     fn build(
@@ -302,7 +320,7 @@ impl<G: GpuGeometry> RenderState<G> {
         surface: Option<wgpu::Surface<'static>>,
         size: WindowSize,
         samples: u32,
-        factories: &[RendererFactory<G>],
+        additions: &Additions<'_, G>,
     ) -> Self {
         let gpu = shared.gpu.clone();
         let supported = |format| {
@@ -339,16 +357,18 @@ impl<G: GpuGeometry> RenderState<G> {
             sample_count,
             elsewhere_layout: &elsewhere.layout,
         };
-        let renderers = factories.iter().map(|factory| factory(&setup)).collect();
+        let renderers = additions
+            .renderers
+            .iter()
+            .map(|factory| factory(&setup))
+            .collect();
         let sky = SkyPass::new(
             &gpu,
             G::SHADER,
             &frame_layout,
-            COLOR_FORMAT,
-            DEPTH_FORMAT,
-            sample_count,
+            (COLOR_FORMAT, DEPTH_FORMAT, sample_count),
+            additions.figure,
         );
-        let sky_image = SkyImagePass::new(&gpu, COLOR_FORMAT, DEPTH_FORMAT, sample_count);
         let settle = SettlePass::new(
             &gpu,
             G::SHADER,
@@ -356,21 +376,27 @@ impl<G: GpuGeometry> RenderState<G> {
             COLOR_FORMAT,
             sample_count > 1,
         );
-        let ink = InkPass::new(
+        let effect_setup = EffectSetup {
+            gpu: &gpu,
+            geometry: G::SHADER,
+            frame_layout: &frame_layout,
+            color_format: COLOR_FORMAT,
+            multisampled_depth: sample_count > 1,
+        };
+        let effects = additions
+            .effects
+            .0
+            .iter()
+            .map(|factory| factory(&effect_setup))
+            .collect();
+        let post = PostPass::new(
             &gpu,
             G::SHADER,
             &frame_layout,
-            COLOR_FORMAT,
+            format,
             sample_count > 1,
+            (additions.grade, additions.figure),
         );
-        let mosh = MoshPass::new(
-            &gpu,
-            G::SHADER,
-            &frame_layout,
-            COLOR_FORMAT,
-            sample_count > 1,
-        );
-        let post = PostPass::new(&gpu, G::SHADER, &frame_layout, format, sample_count > 1);
         let overlay = OverlayPass::new(&gpu, format);
         let discs = DiscProbe::new(&gpu);
         let timer = GpuTimer::new(&gpu, crate::perf::enabled());
@@ -385,11 +411,9 @@ impl<G: GpuGeometry> RenderState<G> {
             sample_count,
             renderers,
             sky,
-            sky_image,
             shadow_map,
             settle,
-            ink,
-            mosh,
+            effects,
             post,
             overlay,
             elsewhere,
@@ -422,8 +446,8 @@ impl<G: GpuGeometry> RenderState<G> {
             })
         };
         let samples = self.sample_count;
-        // The colour target is read by the post pass, copied into the afterimage and held by
-        // the mosh on request, and overwritten by the ink when on and by the mosh while it runs.
+        // The colour target is read by the post pass, copied into the captured frame on
+        // request, and read and overwritten by the settling and the image effects.
         let color = target(
             "fk colour",
             COLOR_FORMAT,
@@ -501,8 +525,13 @@ impl<G: GpuGeometry> RenderState<G> {
             .create_view(&Default::default()),
         };
         self.settle.set_targets(&self.gpu, &color, &depth);
-        self.ink.set_targets(&self.gpu, &color, &depth);
-        self.mosh.set_targets(&self.gpu, &color, &depth);
+        let effect_targets = EffectTargets {
+            color: &color,
+            depth: &depth,
+        };
+        for effect in &mut self.effects {
+            effect.set_targets(&self.gpu, &effect_targets);
+        }
         self.post
             .set_targets(&self.gpu, &color, &depth, &layer.color);
         let targets = Targets {
@@ -585,6 +614,7 @@ impl<G: GpuGeometry> RenderState<G> {
             .cloned()
             .unwrap_or_default();
         // How the eye moved since the last frame: its coordinates now to its coordinates then.
+        // Picked up by the settling and the image effects.
         let motion = match (&view, &self.last_eye) {
             (Some(view), Some(last)) => {
                 G::isometry_matrix(&last.inverse().compose(&view.eye.isometry))
@@ -604,44 +634,35 @@ impl<G: GpuGeometry> RenderState<G> {
         );
         blocks.view.jitter = Vec2f(jitter);
         self.frame.write(&self.gpu.queue, &blocks);
-        self.post.prepare(&self.gpu, &post);
+        self.post.prepare(
+            &self.gpu,
+            &post,
+            &world
+                .get_resource::<GradeValues>()
+                .cloned()
+                .unwrap_or_default(),
+        );
         self.overlay.prepare(
             &self.gpu,
             world.get_resource::<Overlay>(),
             [size.width, size.height],
         );
-        self.ink.prepare(&self.gpu, &post.ink);
-        let hung = world.get_resource::<SkyImage>();
-        let axes = view
-            .as_ref()
-            .zip(hung)
-            .and_then(|(view, hung)| sky_image_axes(view, hung));
-        self.sky_image.prepare(
-            &self.gpu,
-            hung,
-            axes,
-            (
-                blocks.view.proj_scale.0,
-                blocks.view.size.0,
-                world.get_resource::<Time>().map_or(0.0, Time::elapsed) as f32,
-            ),
-        );
-        let delta = world.resource::<Time>().delta() as f32;
-        let carried = if self.mosh.starts(&post.mosh) {
-            world
-                .get_resource_mut::<CarriedImage>()
-                .and_then(|mut carried| carried.take_held())
-        } else {
-            None
+        let effect_frame = EffectFrame {
+            motion,
+            size: [size.width, size.height],
+            delta: world.get_resource::<Time>().map_or(0.0, Time::delta) as f32,
         };
-        self.mosh.prepare(
-            &self.gpu,
-            (&post.mosh, &post.mosh_patches),
-            &motion,
-            [size.width as f32, size.height as f32],
-            delta,
-            carried,
-        );
+        for effect in &mut self.effects {
+            effect.prepare(&self.gpu, world, &effect_frame);
+        }
+        let layer_render = world
+            .get_resource::<LayerRender>()
+            .copied()
+            .unwrap_or_default();
+        let capture = world
+            .get_resource::<FrameCapture>()
+            .copied()
+            .unwrap_or_default();
 
         // Visibility.
         let mut stats = RenderStats::default();
@@ -734,7 +755,6 @@ impl<G: GpuGeometry> RenderState<G> {
                 for renderer in &self.renderers {
                     renderer.render(&mut pass, &bindings);
                 }
-                self.sky_image.render(&mut pass);
             }
         }
         self.timer.mark(&mut encoder, "opaque");
@@ -759,12 +779,12 @@ impl<G: GpuGeometry> RenderState<G> {
             );
         }
 
-        // The layer, only while the lids show it: what is marked on it, over a flat colour.
-        if view.is_some() && post.lids.layer > 0.0 && post.lids.closure > 0.0 {
+        // The layer, only while it is enabled: what is marked on it, over a flat colour.
+        if view.is_some() && layer_render.enabled {
             let layer = &targets.layer;
             let clear = wgpu::Color {
                 a: 1.0,
-                ..post.layer.clear.into()
+                ..layer_render.clear.into()
             };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("fk layer"),
@@ -794,24 +814,23 @@ impl<G: GpuGeometry> RenderState<G> {
         }
         self.timer.mark(&mut encoder, "layer");
 
-        // Settled over frames, before the ink so that its lines are drawn crisp on the settled
-        // image, and before the mosh so that the mosh holds it.
+        // Settled over frames, before the image effects, which work on the settled image.
         self.settle
             .render(&mut encoder, &targets.color, &self.frame.bind_group);
         self.timer.mark(&mut encoder, "settle");
 
-        // Ink, before the mosh so that it is moshed with the image.
-        self.ink
-            .render(&mut encoder, &targets.color, &self.frame.bind_group);
-        self.timer.mark(&mut encoder, "ink");
-
-        // Mosh.
-        self.mosh
-            .render(&mut encoder, &targets.color, &self.frame.bind_group);
-        self.timer.mark(&mut encoder, "mosh");
+        // The caller's image effects, in order.
+        let effect_targets = EffectTargets {
+            color: &targets.color,
+            depth: &targets.depth,
+        };
+        for effect in &mut self.effects {
+            effect.render(&mut encoder, &effect_targets, &self.frame.bind_group);
+            self.timer.mark(&mut encoder, effect.label());
+        }
 
         // Post.
-        self.post.capture(&mut encoder, &targets.color, &post);
+        self.post.capture(&mut encoder, &targets.color, capture);
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("fk post"),
@@ -1080,24 +1099,19 @@ pub(crate) fn frame_blocks<G: GpuGeometry>(
         Vec4f([c(0), c(1), c(2), w as f32])
     };
     let color = |c: Color| Vec4f(c.to_array());
-    let disc = |disc: &SkyDisc, ring: Real| DiscBlock {
-        direction: in_eye(&disc.direction, disc.radius.max(0.0)),
-        shape: {
-            let (kind, points) = match disc.shape {
-                DiscShape::Disc => (0.0, 0.0),
-                DiscShape::Ring => (1.0, 0.0),
-                DiscShape::Star { points } => (2.0, points.clamp(1, 16) as f32),
-            };
-            Vec4f([
-                kind,
-                points,
-                disc.stroke.max(0.0) as f32,
-                disc.over.clamp(0.0, 1.0) as f32,
-            ])
-        },
-        color: color(disc.color),
-        glow: Vec4f([disc.glow.r, disc.glow.g, disc.glow.b, disc.glow_size as f32]),
-        ring: Vec4f([ring.max(0.0) as f32, 0.0, 0.0, 0.0]),
+    let disc = |disc: &SkyDisc| {
+        let (kind, figure) = match disc.shape {
+            DiscShape::Disc => (0.0, [0.0; 4]),
+            DiscShape::Ring => (1.0, [0.0; 4]),
+            DiscShape::Figure { params } => (2.0, params),
+        };
+        DiscBlock {
+            direction: in_eye(&disc.direction, disc.radius.max(0.0)),
+            shape: Vec4f([kind, 0.0, disc.stroke.max(0.0) as f32, 0.0]),
+            color: color(disc.color),
+            glow: Vec4f([disc.glow.r, disc.glow.g, disc.glow.b, disc.glow_size as f32]),
+            figure: Vec4f(figure),
+        }
     };
     let sky = &lighting.sky;
     // The stars' frame: the reference axes turned with the sky, carried to the eye, so the
@@ -1121,8 +1135,8 @@ pub(crate) fn frame_blocks<G: GpuGeometry>(
         sky_below: color(sky.below),
         sky_up: in_eye(&sky.up, sky.gradient),
         star_frame,
-        sun_disc: disc(&sky.sun, 0.0),
-        moon_disc: disc(&sky.moon, 0.0),
+        sun_disc: disc(&sky.sun),
+        moon_disc: disc(&sky.moon),
         fog_density: lighting.fog_density as f32,
         bands: lighting.bands.max(1) as f32,
         stars: sky.stars.max(0.0) as f32,
@@ -1154,11 +1168,7 @@ pub(crate) fn frame_blocks<G: GpuGeometry>(
         ]),
         point_lights,
         point_count: Vec4f([point_count as f32, 0.0, 0.0, 0.0]),
-        discs: std::array::from_fn(|i| {
-            extra
-                .get(i)
-                .map_or_else(|| disc(&SkyDisc::default(), 0.0), |d| disc(&d.disc, d.ring))
-        }),
+        discs: std::array::from_fn(|i| disc(extra.get(i).unwrap_or(&SkyDisc::default()))),
         disc_count: Vec4f([extra.len().min(MAX_SKY_DISCS) as f32, 0.0, 0.0, 0.0]),
     };
 
@@ -1189,21 +1199,6 @@ fn in_eye_frame<G: GpuGeometry>(view: &ActiveView<G>, direction: &Vector3<Real>)
     let moved = G::apply_tangent(&inverse, &direction);
     let at_eye = G::parallel_transport(&at, &origin, &moved);
     Vector3::from_fn(|i, _| G::inner(&origin, &at_eye, &G::origin_frame(i)))
-}
-
-/// The [`SkyImage`]'s centre, right and up in the eye's frame, unit vectors; `None` when its
-/// direction or its up are no directions.
-fn sky_image_axes<G: GpuGeometry>(
-    view: &ActiveView<G>,
-    hung: &SkyImage,
-) -> Option<[Vector3<Real>; 3]> {
-    if hung.direction.norm() < 1e-9 || hung.up.norm() < 1e-9 {
-        return None;
-    }
-    let centre = in_eye_frame(view, &hung.direction).try_normalize(1e-9)?;
-    let up = in_eye_frame(view, &hung.up);
-    let up = (up - centre * up.dot(&centre)).try_normalize(1e-9)?;
-    Some([centre, centre.cross(&up), up])
 }
 
 /// The point lights that reach nearest the eye, made relative to it in f64 (`eye⁻¹ ∘ light`),

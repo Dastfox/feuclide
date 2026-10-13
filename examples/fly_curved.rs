@@ -33,7 +33,7 @@ use fk_render::{
 };
 use fk_scene::{Camera, Pose, ScenePlugin, SceneSystems, Velocity};
 
-use crate::key_list;
+use fk_ui::key_list;
 
 const LOOK_SENSITIVITY: Real = 0.0025;
 

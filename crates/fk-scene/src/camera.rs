@@ -14,7 +14,7 @@ use crate::GlobalPose;
 #[derive(Component, Debug)]
 pub struct Camera<G: Geometry> {
     /// Vertical field of view, in radians: the angle at the eye between the top and bottom
-    /// edges of the image. Games animate it (the Fractal's breath strokes narrow it).
+    /// edges of the image. Games animate it (a dolly zoom narrows it).
     pub fov_y: Real,
     /// Geodesic distance of the near clipping surface.
     pub near: Real,

@@ -4,6 +4,7 @@
 #define_import_path fk::sky
 
 #import fk::view::{view, lighting, Disc}
+#import fk::figure::figure_lines
 
 fn sky_gradient(dir: vec3<f32>) -> vec3<f32> {
     let h = dot(dir, lighting.sky_up.xyz);
@@ -27,8 +28,6 @@ fn pixel_angle() -> f32 {
     return 2.0 / (view.proj_scale.y * view.size.y);
 }
 
-const TAU: f32 = 6.28318530718;
-
 // `dir` in the plane of the sky around the disc, in radians: x along the horizon, y up.
 fn disc_plane(disc: Disc, dir: vec3<f32>) -> vec2<f32> {
     let centre = disc.direction.xyz;
@@ -41,28 +40,6 @@ fn disc_plane(disc: Disc, dir: vec3<f32>) -> vec2<f32> {
     let right = cross(up, centre);
     let off = dir - centre * dot(dir, centre);
     return vec2<f32>(dot(off, right), dot(off, up));
-}
-
-// Distance, in radians, from `p` to the lines of a star whose `points` points lie on a circle
-// of radius `radius`, the first one up: concave arcs join neighbouring points. Each arc is
-// centred where the circle's tangents at its two points meet, so it leaves both points along
-// the radius and neighbouring arcs meet in a cusp (four points: arcs of radius `radius`
-// centred on the corners of the square around the circle).
-fn star_lines(p: vec2<f32>, radius: f32, points: f32) -> f32 {
-    let r = length(p);
-    let n = max(points, 2.0);
-    let half = 0.5 * TAU / n;
-    // Fold into one gap between two points, measured from the bisector of that gap.
-    let angle = atan2(p.x, p.y);
-    let theta = angle - (floor(angle / (2.0 * half)) * 2.0 + 1.0) * half;
-    let q = vec2<f32>(r * cos(theta), r * sin(theta));
-    if r <= radius {
-        let centre = vec2<f32>(radius / cos(half), 0.0);
-        return abs(length(q - centre) - radius * tan(half));
-    }
-    // Past the circle: round caps on the points.
-    let tip = vec2<f32>(radius * cos(half), radius * sin(half) * sign(theta));
-    return length(q - tip);
 }
 
 // How much of the pixel looking along `dir` the disc covers, with a one-pixel soft edge.
@@ -84,16 +61,12 @@ fn disc_cover(disc: Disc, dir: vec3<f32>) -> f32 {
             strength = faint;
         }
         case 2u: {
-            d = star_lines(p, radius, disc.shape.y) - 0.5 * stroke;
+            d = figure_lines(p, radius, disc.figure) - 0.5 * stroke;
             strength = faint;
         }
         default: {
             d = length(p) - radius;
         }
-    }
-    // The ring round it, in its lines.
-    if disc.ring.x > 0.0 {
-        d = min(d, abs(length(p) - radius * disc.ring.x) - 0.5 * stroke);
     }
     return strength * (1.0 - smoothstep(-0.5 * px, 0.5 * px, d));
 }

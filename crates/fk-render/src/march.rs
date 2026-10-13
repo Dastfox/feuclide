@@ -43,11 +43,9 @@ const CLASSIFY_GROUP: u32 = 8;
 /// `march.params` (`#import fk::march::march`), the [`RayMarched::params`] of the scene drawn,
 /// and may read the world block (`fk::view`), which is how a field follows a game value.
 ///
-/// It may also define `fn sdf_kept(q: vec3<f32>) -> bool`: where it is true the surface is
-/// kept out of the [`MoshPatch`](crate::MoshPatch)es, neither moshed nor smeared into them;
-/// and `fn sdf_moshed(q: vec3<f32>) -> bool`: where it is true (and `sdf_kept` is not) the
-/// surface carries the first patch's mosh wherever it is on the image, out of the patch too,
-/// block by block round it.
+/// It may also define `fn sdf_alpha(q: vec3<f32>) -> f32`: the image's alpha on the surface
+/// there, from 1 (as without it) to 4, a mark the caller's [`ImageEffect`](crate::ImageEffect)s
+/// and post pass read (a surface kept out of an effect, one carrying it).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SdfShader {
     /// A name for messages, and the file path the module's errors point into.
@@ -86,15 +84,9 @@ impl SdfShader {
         Ok(())
     }
 
-    /// Whether the module keeps some of its surface out of the mosh patches: it defines
-    /// `sdf_kept`.
-    fn keeps(&self) -> bool {
-        self.source.contains("fn sdf_kept")
-    }
-
-    /// Whether some of its surface carries the mosh patches' mosh: it defines `sdf_moshed`.
-    fn moshes(&self) -> bool {
-        self.source.contains("fn sdf_moshed")
+    /// Whether the module marks the image's alpha on its surface: it defines `sdf_alpha`.
+    fn marks(&self) -> bool {
+        self.source.contains("fn sdf_alpha")
     }
 
     pub(crate) fn compose(
@@ -125,11 +117,8 @@ impl SdfShader {
             if metric.is_some() {
                 defs.push("SAMPLED_METRIC");
             }
-            if self.keeps() {
-                defs.push("SDF_KEPT");
-            }
-            if self.moshes() {
-                defs.push("SDF_MOSHED");
+            if self.marks() {
+                defs.push("SDF_ALPHA");
             }
         }
         fk_shaders::compose_hooked(shader, geometry, &defs, &hooks)

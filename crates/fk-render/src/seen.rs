@@ -12,7 +12,7 @@ use crate::gpu::Vec4f;
 /// How much of the [`Sky`](crate::Sky)'s sun and of its moon the scene leaves in view, as a
 /// resource the renderer writes: the share of the pixels inside each one's circle where no
 /// surface is drawn, 0 hidden behind surfaces (or off the image, or not drawn), 1 in full view.
-/// The horizon is not counted, nor [`SkyDisc::over`](crate::SkyDisc::over).
+/// The horizon is not counted.
 ///
 /// It is read back from the image a frame or two late, without waiting for the GPU. A large
 /// disc is measured over the square at its centre, [`DiscProbe::SIDE`] pixels across.

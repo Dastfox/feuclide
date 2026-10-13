@@ -11,9 +11,8 @@
 // scene asks (`march.paint`); its depth is written in
 // the encoding every render path shares, so raster and ray-marched surfaces hide each other.
 //
-// The image's alpha is 1 on a surface; composed with `SDF_KEPT`, it is 2 where the field's
-// `sdf_kept` says the surface is kept out of the mosh patches; composed with `SDF_MOSHED`, 3
-// where its `sdf_moshed` says the surface carries their mosh wherever it is.
+// The image's alpha is 1 on a surface; composed with `SDF_ALPHA`, it is what the field's
+// `sdf_alpha` says there (from 1 to 4), a mark for the caller's image effects to read.
 //
 // Entry points: `vertex` (fullscreen triangle); `fragment` (full resolution: colour, depth,
 // misses discarded); `fragment_half` (into two offscreen targets: colour with alpha 1 on a hit,
@@ -36,11 +35,8 @@
 #import fk::paint::{banded, point_lights}
 #import fk::march::{march, march_cone}
 #import fk::sdf::{sdf_distance, sdf_color}
-#ifdef SDF_KEPT
-#import fk::sdf::sdf_kept
-#endif
-#ifdef SDF_MOSHED
-#import fk::sdf::sdf_moshed
+#ifdef SDF_ALPHA
+#import fk::sdf::sdf_alpha
 #endif
 #ifdef SAMPLED_METRIC
 #import fk::metric::geo_geodesic_accel
@@ -421,20 +417,13 @@ fn shade(hit: Hit) -> vec3<f32> {
     return mix(lit, sky_haze(hit.ray.dir), haze);
 }
 
-// The image's alpha for a hit: 1, 2 where the field keeps its surface out of the mosh
-// patches, or 3 where its surface carries their mosh wherever it is.
+// The image's alpha for a hit: 1, or what the field's `sdf_alpha` says there.
 fn surface_alpha(hit: Hit) -> f32 {
-#ifdef SDF_KEPT
-    if sdf_kept(scene_point(geo_normalize_point(ray_point(hit.ray)))) {
-        return 2.0;
-    }
-#endif
-#ifdef SDF_MOSHED
-    if sdf_moshed(scene_point(geo_normalize_point(ray_point(hit.ray)))) {
-        return 3.0;
-    }
-#endif
+#ifdef SDF_ALPHA
+    return clamp(sdf_alpha(scene_point(geo_normalize_point(ray_point(hit.ray)))), 1.0, 4.0);
+#else
     return 1.0;
+#endif
 }
 
 // Where the ray through `pixel` (window pixels, a pixel's middle) goes through it this frame, in

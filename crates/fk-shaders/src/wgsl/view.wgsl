@@ -26,15 +26,14 @@ struct World {
 struct Disc {
     // Unit direction towards it; w is its angular radius in radians, 0 for nothing.
     direction: vec4<f32>,
-    // x: 0 a filled disc, 1 a ring, 2 a star; y: the star's points; z: the width of
-    // the lines of a ring or a star, in radians; w: how much of it shows over the surfaces in
-    // front of it (drawn by the post pass), 0 none.
+    // x: 0 a filled disc, 1 a ring, 2 a figure (`fk::figure`); z: the width of the lines of a
+    // ring or a figure, in radians.
     shape: vec4<f32>,
     color: vec4<f32>,
     // Colour of the glow; w is the angle in radians over which it falls to 1/e.
     glow: vec4<f32>,
-    // x: a ring round it in its lines, its radius times the disc's; 0 for none.
-    ring: vec4<f32>,
+    // A figure's own values, passed to `figure_lines`.
+    figure: vec4<f32>,
 }
 
 // A point light. Its light falls off as the geometry's spheres grow (`geo_light_falloff`) and

@@ -488,7 +488,7 @@ mod tests {
         Se3::exp(&E3::transvection(&Vector3::new(x, y, z)))
     }
 
-    fn henri(pose: Se3) -> Character<E3> {
+    fn walker(pose: Se3) -> Character<E3> {
         Character::new(
             pose,
             CharacterShape {
@@ -547,7 +547,7 @@ mod tests {
     #[test]
     fn it_stands_on_the_ground_and_lands_when_dropped() {
         let field = Field::new(&[]);
-        let mut body = henri(at(0.0, 2.0, 0.0));
+        let mut body = walker(at(0.0, 2.0, 0.0));
         field.run(&mut body, Vector3::zeros(), 0.5);
         assert!(!body.on_ground, "still falling after half a second");
         field.run(&mut body, Vector3::zeros(), 1.0);
@@ -560,7 +560,7 @@ mod tests {
     #[test]
     fn a_jump_goes_up_and_comes_down_in_two_v_over_g() {
         let field = Field::new(&[]);
-        let mut body = henri(at(0.0, 0.0, 0.0));
+        let mut body = walker(at(0.0, 0.0, 0.0));
         field.run(&mut body, Vector3::zeros(), 0.1);
         assert!(body.on_ground);
         body.step(&Vector3::zeros(), 5.0, &field.around(), DT);
@@ -579,7 +579,7 @@ mod tests {
     #[test]
     fn walking_into_a_tower_stops_at_its_side() {
         let field = Field::new(&[(0.0, -10.0)]);
-        let mut body = henri(at(0.0, 0.0, 0.0));
+        let mut body = walker(at(0.0, 0.0, 0.0));
         field.run(&mut body, Vector3::new(0.0, 0.0, -4.0), 5.0);
         let feet = body.feet();
         assert!((feet.z - (-10.0 + 1.8 + 0.3)).abs() < 1e-6, "{feet}");
@@ -589,7 +589,7 @@ mod tests {
     #[test]
     fn walking_at_a_slant_slides_around_it() {
         let field = Field::new(&[(0.5, -10.0)]);
-        let mut body = henri(at(0.0, 0.0, 0.0));
+        let mut body = walker(at(0.0, 0.0, 0.0));
         field.run(&mut body, Vector3::new(0.0, 0.0, -4.0), 6.0);
         let feet = body.feet();
         assert!(feet.z < -12.0, "slid past it: {feet}");
@@ -600,7 +600,7 @@ mod tests {
     #[test]
     fn turning_turns_the_way_it_walks() {
         let field = Field::new(&[]);
-        let mut body = henri(at(0.0, 0.0, 0.0));
+        let mut body = walker(at(0.0, 0.0, 0.0));
         body.turn(FRAC_PI_2);
         field.run(&mut body, Vector3::new(0.0, 0.0, -1.0), 1.0);
         let feet = body.feet();
@@ -616,7 +616,7 @@ mod tests {
             field: Some(&wall),
             ..field.around()
         };
-        let mut body = henri(at(0.0, 0.0, 0.0));
+        let mut body = walker(at(0.0, 0.0, 0.0));
         for _ in 0..300 {
             body.step(&Vector3::new(0.0, 0.0, -4.0), 0.0, &around, DT);
         }
@@ -634,7 +634,7 @@ mod tests {
             field: Some(&slab),
             ..field.around()
         };
-        let mut body = henri(at(0.0, 3.0, 0.0));
+        let mut body = walker(at(0.0, 3.0, 0.0));
         for _ in 0..120 {
             body.step(&Vector3::zeros(), 0.0, &around, DT);
         }
@@ -665,7 +665,7 @@ mod tests {
             ..field.around()
         };
         for speed in [4.0, 9.0] {
-            let mut body = henri(at(0.0, 20.5, 0.0));
+            let mut body = walker(at(0.0, 20.5, 0.0));
             while !body.on_ground {
                 body.step(&Vector3::zeros(), 0.0, &around, DT);
             }
@@ -693,7 +693,7 @@ mod tests {
             field: Some(&land),
             ..field.around()
         };
-        let mut body = henri(at(0.0, 0.5, 0.0));
+        let mut body = walker(at(0.0, 0.5, 0.0));
         for _ in 0..120 {
             body.step(&Vector3::zeros(), 0.0, &around, DT);
         }
@@ -717,7 +717,7 @@ mod tests {
     #[test]
     fn it_never_sinks_into_a_tower_however_it_comes_on() {
         // A regression on penetration depth: a ring of towers close together, run into from
-        // every way at a walk, a run and far faster than Henri ever goes; after every step the
+        // every way at a walk, a run and far faster than a person ever goes; after every step the
         // capsule's axis stays at least the two radii from every tower's.
         let towers: Vec<_> = (0..8)
             .map(|i| {
@@ -729,7 +729,7 @@ mod tests {
         for speed in [1.4, 6.0, 40.0] {
             for k in 0..16 {
                 let a = Real::from(k) * std::f64::consts::TAU / 16.0 + 0.1;
-                let mut body = henri(at(0.0, 0.0, 0.0));
+                let mut body = walker(at(0.0, 0.0, 0.0));
                 let walk = Vector3::new(a.cos(), 0.0, a.sin()) * speed;
                 for _ in 0..240 {
                     body.step(&walk, 0.0, &field.around(), DT);
@@ -747,7 +747,7 @@ mod tests {
     #[test]
     fn across_a_face_of_a_torus_it_bumps_into_what_stands_on_the_other_side() {
         // A flat torus 10 m round along x and z; a tower 0.5 thick at x = 4.8, just inside the
-        // +x face. Walking −x from x = −2, Henri meets its copy at x = −5.2 (across the −x
+        // +x face. Walking −x from x = −2, the walker meets its copy at x = −5.2 (across the −x
         // face) and stops at its side, x = −5.2 + 0.5 + 0.3, without ever crossing.
         let torus = fk_quotient::Quotient::<E3>::from_translations(
             Point3::origin(),
@@ -759,7 +759,7 @@ mod tests {
             b: Point3::new(4.8, 3.0, 0.0),
             radius: 0.5,
         });
-        let mut body = henri(at(-2.0, 0.0, 0.0));
+        let mut body = walker(at(-2.0, 0.0, 0.0));
         field.run(&mut body, Vector3::new(-2.0, 0.0, 0.0), 3.0);
         assert!(
             body.feet().x < -7.0,
@@ -767,7 +767,7 @@ mod tests {
             body.feet()
         );
         field.colliders.in_quotient(torus, 2, 1.0);
-        let mut body = henri(at(-2.0, 0.0, 0.0));
+        let mut body = walker(at(-2.0, 0.0, 0.0));
         field.run(&mut body, Vector3::new(-2.0, 0.0, 0.0), 3.0);
         let feet = body.feet();
         assert!((feet.x - (-5.2 + 0.5 + 0.3)).abs() < 1e-6, "{feet}");
@@ -780,7 +780,7 @@ mod tests {
     #[test]
     fn a_beam_straddling_a_face_stops_it_from_either_side() {
         // Space closes up along z every 10 m; a low beam from z = 4 to z = 6 crosses the face
-        // at z = 5. Walking +z from z = 2 Henri stops at its end, z = 4 − 0.4 − 0.3; walking
+        // at z = 5. Walking +z from z = 2 the walker stops at its end, z = 4 − 0.4 − 0.3; walking
         // −z from z = −2 he meets the part that sticks out across the face, ending at
         // z = −4, and stops at z = −4 + 0.4 + 0.3.
         let line = fk_quotient::Quotient::<E3>::from_translations(
@@ -794,10 +794,10 @@ mod tests {
             radius: 0.4,
         });
         field.colliders.in_quotient(line, 2, 1.0);
-        let mut body = henri(at(0.0, 0.0, 2.0));
+        let mut body = walker(at(0.0, 0.0, 2.0));
         field.run(&mut body, Vector3::new(0.0, 0.0, 2.0), 3.0);
         assert!((body.feet().z - 3.3).abs() < 1e-6, "{}", body.feet());
-        let mut body = henri(at(0.0, 0.0, -2.0));
+        let mut body = walker(at(0.0, 0.0, -2.0));
         field.run(&mut body, Vector3::new(0.0, 0.0, -2.0), 3.0);
         assert!((body.feet().z + 3.3).abs() < 1e-6, "{}", body.feet());
     }

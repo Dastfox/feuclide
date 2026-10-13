@@ -950,6 +950,7 @@ dependencies = [
  "fk-quotient",
  "fk-render",
  "fk-scene",
+ "fk-ui",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1057,8 +1058,10 @@ dependencies = [
  "fk-quotient",
  "fk-render",
  "fk-scene",
+ "fk-shaders",
  "tracing",
  "tracing-subscriber",
+ "wgpu",
 ]
 
 [[package]]
@@ -1170,6 +1173,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fk-sky"
+version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "fk-app",
+ "fk-math",
+ "fk-render",
+ "serde",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "fk-tools"
 version = "0.1.0"
 dependencies = [
@@ -1182,6 +1198,16 @@ dependencies = [
  "fk-render",
  "fk-scene",
  "png",
+]
+
+[[package]]
+name = "fk-ui"
+version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "fk-app",
+ "fk-math",
+ "fk-render",
 ]
 
 [[package]]

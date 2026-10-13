@@ -47,6 +47,11 @@ use kira::track::{
 };
 use kira::{AudioManager, AudioManagerSettings, Decibels, DefaultBackend, Mix, Tween};
 
+pub mod synth;
+mod takes;
+
+pub use takes::Takes;
+
 /// Opens the default output device as the [`Audio`] resource, unless the app already has one,
 /// and applies the [`Acoustics`] to its room whenever they change.
 #[derive(Clone, Copy, Debug, Default)]

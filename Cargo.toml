@@ -34,6 +34,8 @@ fk-physics = { path = "crates/fk-physics", version = "0.1.0" }
 fk-assets = { path = "crates/fk-assets", version = "0.1.0" }
 fk-app = { path = "crates/fk-app", version = "0.1.0" }
 fk-audio = { path = "crates/fk-audio", version = "0.1.0" }
+fk-sky = { path = "crates/fk-sky", version = "0.1.0" }
+fk-ui = { path = "crates/fk-ui", version = "0.1.0" }
 
 nalgebra = "0.35"
 proptest = "1.11"

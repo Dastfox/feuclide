@@ -1,6 +1,6 @@
 // The settle pass: one fullscreen triangle blending the image with the last ones, after the
-// opaque pass and before the ink (drawn crisp on the settled image), so that every later effect
-// sees the settled image.
+// opaque pass and before the caller's image effects, so that every later effect sees the settled
+// image.
 //
 // Each frame the rays (and the raster path's vertices) go through another point of their pixel
 // (`view.jitter`), so the images settled over a few frames are each pixel's average: edges and
@@ -18,7 +18,7 @@
 // every frame.
 //
 // It draws into a pair of targets of its own (the colour, and the distance the next frame finds
-// it again by), the alpha (surface, sky, kept out of the mosh) passed on as it is now, unmarked.
+// it again by), the alpha (surface, sky, a field's mark) passed on as it is now, unmarked.
 
 #import fk::view::{view, pixel_to_ndc}
 #import fk::geometry::{geo_apply_iso, geo_depth_to_distance, geo_point_from_eye, geo_project}

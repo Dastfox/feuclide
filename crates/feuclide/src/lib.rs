@@ -38,11 +38,12 @@ pub mod prelude {
     };
     pub use fk_quotient::Quotient;
     pub use fk_render::{
-        Afterimage, CarriedImage, CastsNoShadow, Color, Deform, DeformShader, Deforms, DiscShape,
-        Elsewhere, Gauge, Hidden, Ink, Instance, LayerRender, Lids, Lighting, Mark, MeshBuilder,
-        MeshInstances, Meshes, Mosh, MoshKind, MoshPatch, Multisampling, OnLayer, PostMode,
+        CarriedImage, CastsNoShadow, Color, Deform, DeformShader, Deforms, DiscShape, Elsewhere,
+        FrameCapture, Gauge, GradeShader, GradeValues, Hidden, ImageEffect, Instance, LayerRender,
+        Lighting, MeshBuilder, MeshInstances, Meshes, Multisampling, OnLayer, PostMode,
         PostSettings, RayMarched, RayMarching, RenderPlugin, Screenshots, SdfShader, Sdfs, Shadows,
-        ShowsElsewhere, Sky, SkyDisc, TextPanel, Tunnel, Warp, WorldUniforms, shapes,
+        ShowsElsewhere, Sky, SkyDisc, SkyFigure, TextPanel, WorldUniforms, add_image_effect,
+        shapes,
     };
     pub use fk_scene::{
         ActiveView, Camera, ChartTag, FloatingOrigin, GlobalPose, Pose, ScenePlugin, SceneSystems,
