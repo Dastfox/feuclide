@@ -55,6 +55,9 @@ pub struct MeshBuilder {
     maps: Vec<Option<NormalMap>>,
     indices: Vec<u32>,
     normal_map: Option<NormalMap>,
+    /// Whether, drawn as a window onto the other eye ([`ShowsElsewhere`](crate::ShowsElsewhere)),
+    /// it frames that eye's whole image by its texture coordinates.
+    framed: bool,
 }
 
 impl MeshBuilder {
@@ -96,6 +99,15 @@ impl MeshBuilder {
         self.uvs.push(uv);
         self.maps.push(map);
         index
+    }
+
+    /// Drawn as a window onto the other eye ([`ShowsElsewhere`](crate::ShowsElsewhere)), the
+    /// mesh frames that eye's whole image by its texture coordinates (a square of it, its
+    /// middle: `u` and `v` 0 to 1 across it), as a screen would, in place of showing what that
+    /// eye sees at its pixels, as a window does. Its vertices carry no normal map then.
+    pub fn framed(&mut self) -> &mut Self {
+        self.framed = true;
+        self
     }
 
     /// Lays `map` on the mesh by its texture coordinates, on every vertex without a map of its
@@ -241,7 +253,13 @@ impl MeshBuilder {
                 Vertex {
                     position: Vec4f::from_real(&G::embed_point(&point)),
                     normal: carry(normal),
-                    uv: Vec4f([uv[0] as f32, uv[1] as f32, layer, sign as f32]),
+                    // A framed window marks its vertices by a layer no map has.
+                    uv: Vec4f([
+                        uv[0] as f32,
+                        uv[1] as f32,
+                        if self.framed { -1.0 } else { layer },
+                        sign as f32,
+                    ]),
                     tangent: along.map_or(Vec4f::default(), |along| carry(&along)),
                 }
             })

@@ -144,12 +144,17 @@ fn fragment(in: Varyings) -> @location(0) vec4<f32> {
 }
 
 // A window onto the scene seen from another eye: what that eye sees at this pixel, times the
-// instance's colour. Unlit and unfogged, since that image has its own light and fog; its
-// alpha is the image's, 0 where it shows the sky.
+// instance's colour; or, framed (its texture coordinates' layer below 0, `MeshBuilder::framed`),
+// the middle square of that eye's whole image by its texture coordinates, as a screen. Unlit and
+// unfogged, since that image has its own light and fog; its alpha is the image's, 0 where it
+// shows the sky.
 @fragment
 fn window_fragment(in: Varyings) -> @location(0) vec4<f32> {
     var uv = in.clip.xy / view.size;
-    if elsewhere.x > 0.5 {
+    if in.uv.z < -0.5 {
+        let square = view.size.y / view.size.x;
+        uv = vec2<f32>(0.5 + (in.uv.x - 0.5) * square, 1.0 - in.uv.y);
+    } else if elsewhere.x > 0.5 {
         uv.y = 1.0 - uv.y;
     }
     let seen = textureSampleLevel(elsewhere_image, elsewhere_sampler, uv, 0.0);
