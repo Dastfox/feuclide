@@ -1,8 +1,11 @@
 //! The ray-march pipeline's compiled fields: each field's shader and its pipelines, built one
 //! at a time as they are first needed, in parallel, and kept on the device for every renderer
-//! after (a [`SharedDevice`](crate::SharedDevice) handed to the next app keeps them too).
+//! after (a [`SharedDevice`](crate::SharedDevice) handed to the next app keeps them too). A
+//! frame never waits for one: a cold driver takes a minute over a big field's, and the window
+//! would stop answering meanwhile.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Instant;
 
@@ -198,6 +201,8 @@ pub(crate) struct Field {
     shader: wgpu::ShaderModule,
     builder: Arc<Builder>,
     built: [OnceLock<Built>; Variant::ALL.len()],
+    /// Which pipelines a frame asked for ([`build_soon`]).
+    asked: [AtomicBool; Variant::ALL.len()],
 }
 
 impl Field {
@@ -209,7 +214,7 @@ impl Field {
     }
 
     /// Whether `variant` is built.
-    fn has(&self, variant: Variant) -> bool {
+    pub(crate) fn has(&self, variant: Variant) -> bool {
         self.built[variant.index()].get().is_some()
     }
 
@@ -315,6 +320,7 @@ impl KeptFields {
                 shader,
                 builder: builder.clone(),
                 built: Default::default(),
+                asked: Default::default(),
             }))
         };
         std::thread::scope(|scope| {
@@ -358,24 +364,40 @@ pub(crate) fn build_later(later: Vec<(Arc<Field>, Variant)>) {
         .into_iter()
         .filter(|(field, variant)| !field.has(*variant))
         .collect();
+    spawn_builds(todo, "ahead of need");
+}
+
+/// Builds every pipeline of `needs` neither built nor asked for yet, on threads of their own
+/// beside those building ahead of need, without waiting: what a frame would draw with, drawn
+/// once they are.
+pub(crate) fn build_soon(needs: &[(Arc<Field>, Variant)]) {
+    let todo: Vec<_> = needs
+        .iter()
+        .filter(|(field, variant)| {
+            !field.has(*variant) && !field.asked[variant.index()].swap(true, Ordering::Relaxed)
+        })
+        .cloned()
+        .collect();
+    spawn_builds(todo, "as a frame asked");
+}
+
+/// Builds `todo` on a thread of its own, spread over half the cores (the game plays on
+/// meanwhile), logged as built `why`.
+fn spawn_builds(todo: Vec<(Arc<Field>, Variant)>, why: &'static str) {
     if todo.is_empty() {
         return;
     }
-    // Half the cores: the game plays on meanwhile.
     let threads = threads().div_ceil(2);
     let spawned = std::thread::Builder::new()
-        .name("fk pipelines ahead".to_owned())
+        .name("fk pipelines".to_owned())
         .spawn(move || {
             let started = Instant::now();
             let count = todo.len();
             run_spread(todo, threads);
-            tracing::info!(
-                "{count} pipelines built ahead of need in {:.0?}",
-                started.elapsed()
-            );
+            tracing::info!("{count} pipelines built {why} in {:.0?}", started.elapsed());
         });
     if let Err(error) = spawned {
-        tracing::warn!("cannot build pipelines ahead, they will be as they come: {error}");
+        tracing::warn!("cannot build pipelines on a thread of their own: {error}");
     }
 }
 

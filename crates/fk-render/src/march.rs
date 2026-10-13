@@ -17,6 +17,7 @@ use fk_shaders::Shader;
 
 use crate::fields::{
     Builder, COARSE, Field, FieldKey, HALF_COLOR, HALF_DISTANCE, Variant, build_later, build_now,
+    build_soon,
 };
 use crate::frame::uniform_bytes;
 use crate::gpu::{Vec4f, matrix_columns};
@@ -301,6 +302,27 @@ impl Sdfs {
     /// Every field, in the order they were added.
     pub fn all(&self) -> &[SdfShader] {
         &self.0
+    }
+}
+
+/// Which fields the ray-march pipeline can draw yet, as a resource it writes each frame. A
+/// frame never waits for a field's pipelines: until those a scene draws with are built (on
+/// threads of their own: a minute for a big field on a cold driver cache), it is not drawn.
+/// A game that must not show the world without it (a scene coming in behind shut eyes) waits
+/// for [`ready`](Self::ready). Absent without a ray-march pipeline.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct FieldsBuilt {
+    /// How many fields of [`Sdfs`] the pipeline has taken in.
+    known: u32,
+    /// The fields of scenes left out of the last frame, their pipelines building.
+    building: Vec<SdfHandle>,
+}
+
+impl FieldsBuilt {
+    /// Whether a scene marching `sdf` is drawn: its field taken in (or found not to compile,
+    /// and then never drawn) and the pipelines the scenes marching it draw with built.
+    pub fn ready(&self, sdf: SdfHandle) -> bool {
+        sdf.0 < self.known && !self.building.contains(&sdf)
     }
 }
 
@@ -746,9 +768,9 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
     }
 
     /// Compiles the fields added to `sdfs` since: their shaders now (or as kept on the
-    /// device), the pipelines `world`'s scenes draw them with now too, every other one of
-    /// them ahead of need.
-    fn compile_new_sdfs(&mut self, gpu: &Gpu, sdfs: &Sdfs, world: &mut World) {
+    /// device), the pipelines `world`'s scenes draw them with now too if `wait` (else soon,
+    /// without waiting), every other one of them ahead of need.
+    fn compile_new_sdfs(&mut self, gpu: &Gpu, sdfs: &Sdfs, world: &mut World, wait: bool) {
         let first = self.pipelines.len();
         if sdfs.all().len() <= first {
             return;
@@ -781,7 +803,8 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
                 .cloned()
                 .flatten()
         };
-        // What the scenes there are draw with: now, before the first frame needs it.
+        // What the scenes there are draw with: now, before the first frame needs it (or, while
+        // frames are drawn, as soon as can be).
         let mut marched = world.query::<&RayMarched>();
         let now: Vec<_> = marched
             .iter(world)
@@ -792,7 +815,11 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
                     .map(move |variant| (field.clone(), variant))
             })
             .collect();
-        build_now(&now);
+        if wait {
+            build_now(&now);
+        } else {
+            build_soon(&now);
+        }
         tracing::info!(
             "{} distance fields compiled in {:.0?}",
             self.pipelines.len() - first,
@@ -980,8 +1007,10 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
     }
 }
 
-impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
-    fn warm(&mut self, gpu: &Gpu, world: &mut World) {
+impl<G: GpuGeometry> RayMarchPipeline<G> {
+    /// Compiles the fields added since, waiting for the pipelines `world`'s scenes draw with
+    /// if `wait`.
+    fn take_in_sdfs(&mut self, gpu: &Gpu, world: &mut World, wait: bool) {
         let metric = world
             .get_resource::<RayMarching>()
             .and_then(|settings| settings.metric.clone());
@@ -991,13 +1020,39 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
         }
         if world.contains_resource::<Sdfs>() {
             world.resource_scope(|world, sdfs: bevy_ecs::world::Mut<'_, Sdfs>| {
-                self.compile_new_sdfs(gpu, &sdfs, world);
+                self.compile_new_sdfs(gpu, &sdfs, world, wait);
             });
         }
     }
+}
+
+impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
+    fn warm(&mut self, gpu: &Gpu, world: &mut World) {
+        self.take_in_sdfs(gpu, world, true);
+        // What the scenes there draw with, of fields taken in before them too.
+        let settings = world
+            .get_resource::<RayMarching>()
+            .cloned()
+            .unwrap_or_default();
+        let mut marched = world.query::<&RayMarched>();
+        let needs: Vec<_> = marched
+            .iter(world)
+            .filter_map(|marched| {
+                let field = self.pipelines.get(marched.sdf.0 as usize)?.as_ref()?;
+                Some((field.clone(), marched))
+            })
+            .flat_map(|(field, marched)| {
+                likely(marched, &settings)
+                    .into_iter()
+                    .map(move |variant| (field.clone(), variant))
+            })
+            .collect();
+        build_now(&needs);
+    }
 
     fn prepare(&mut self, gpu: &Gpu, world: &mut World, view: &FrameView<'_, G>) {
-        self.warm(gpu, world);
+        // A frame never waits for a pipeline: the window would stop answering.
+        self.take_in_sdfs(gpu, world, false);
         let settings = world
             .get_resource::<RayMarching>()
             .cloned()
@@ -1032,13 +1087,34 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
             })
             .collect();
         self.drawn = 0;
-        // Only fields that compiled are drawn.
+        // Only fields that compiled are drawn, once the pipelines they draw with are built:
+        // those that are not yet are asked for, and their scenes left out meanwhile.
+        let mut building = Vec::new();
         let scenes: Vec<_> = scenes
             .into_iter()
             .filter(|(_, marched, _, _)| {
-                matches!(self.pipelines.get(marched.sdf.0 as usize), Some(Some(_)))
+                let Some(Some(field)) = self.pipelines.get(marched.sdf.0 as usize) else {
+                    return false;
+                };
+                let needs: Vec<_> = likely(marched, &settings)
+                    .into_iter()
+                    .filter(|variant| !field.has(*variant))
+                    .map(|variant| (field.clone(), variant))
+                    .collect();
+                if needs.is_empty() {
+                    return true;
+                }
+                build_soon(&needs);
+                if !building.contains(&marched.sdf) {
+                    building.push(marched.sdf);
+                }
+                false
             })
             .collect();
+        world.insert_resource(FieldsBuilt {
+            known: u32::try_from(self.pipelines.len()).unwrap_or(u32::MAX),
+            building,
+        });
         // The scene ahead of the others, if any: the first drawn that asks.
         let ahead = scenes.iter().position(|(_, marched, _, _)| marched.ahead);
         // How the others find its distances: window pixels per pixel of its target, negative
@@ -1175,13 +1251,22 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
             }
             gpu.queue
                 .write_buffer(&scene.uniform, 0, &uniform_bytes(&block));
-            // The pipelines it draws with this frame, built now unless they were ahead.
-            if let Some(Some(field)) = self.pipelines.get(marched.sdf.0 as usize) {
-                let carried = tiles_marched.is_some();
-                for variant in drawn_with(cones > 0, offscreen, carried, half, marched.over) {
-                    field.get(variant);
-                }
-            }
+            // The pipelines it draws with this frame are among those it is likely drawn with,
+            // all built (above).
+            debug_assert!(
+                self.pipelines
+                    .get(marched.sdf.0 as usize)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|field| drawn_with(
+                        cones > 0,
+                        offscreen,
+                        tiles_marched.is_some(),
+                        half,
+                        marched.over
+                    )
+                    .into_iter()
+                    .all(|variant| field.has(variant)))
+            );
         }
         // Where each scene's rays start and stop: its own cones, and the distances of the
         // scene ahead (not its own).
@@ -1335,8 +1420,8 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
 }
 
 impl<G: GpuGeometry> RayMarchPipeline<G> {
-    /// `scene`'s field's `variant`, if it is built (as [`prepare`](GeometryRenderer::prepare)
-    /// builds every one the frame draws with).
+    /// `scene`'s field's `variant`, if it is built (as every one the frame draws with is:
+    /// [`prepare`](GeometryRenderer::prepare) leaves out the scenes whose are not).
     fn pipeline(&self, scene: &Scene, variant: Variant) -> Option<&wgpu::RenderPipeline> {
         self.pipelines
             .get(scene.sdf as usize)?
@@ -1721,6 +1806,8 @@ fn sdf_color(q: vec3<f32>) -> vec3<f32> {
                 gpu.queue.submit([encoder.finish()]);
                 encoder = device.create_command_encoder(&Default::default());
             }
+            // As an image drawn once does: waiting for what it draws with.
+            pipeline.warm(gpu, &mut world);
             pipeline.prepare(gpu, &mut world, &view);
             pipeline.queue(gpu, &view);
             assert_eq!(GeometryRenderer::<E3>::stats(&pipeline).drawn, scenes.len());

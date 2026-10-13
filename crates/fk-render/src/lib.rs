@@ -104,7 +104,7 @@ pub use gpu::{Gpu, Vec2f, Vec4f, matrix_columns};
 pub use graph::SharedDevice;
 pub use light::{MAX_POINT_LIGHTS, PointLight};
 pub use march::{
-    RayMarchPipeline, RayMarched, RayMarching, SDF_PARAMS, SdfHandle, SdfShader, Sdfs,
+    FieldsBuilt, RayMarchPipeline, RayMarched, RayMarching, SDF_PARAMS, SdfHandle, SdfShader, Sdfs,
 };
 pub use mesh::{Instance, Mesh, MeshBuilder, MeshHandle, MeshInstances, Meshes, Vertex, tangent};
 pub use normal_map::{NormalMap, NormalMaps, axis, box_uv, heights_to_normals};

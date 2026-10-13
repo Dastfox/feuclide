@@ -178,7 +178,9 @@ impl<G: GpuGeometry> Offscreen<G> {
         if paths != Paths::Raster {
             renderers.push(&mut self.march);
         }
+        // An image drawn once waits for everything it draws with; a frame of a window does not.
         for renderer in &mut renderers {
+            renderer.warm(gpu, world);
             renderer.prepare(gpu, world, &view);
         }
         for renderer in &mut renderers {
