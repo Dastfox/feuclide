@@ -7,15 +7,21 @@
 //! by the step that leads to the cell it is in, which is a symmetry of the tiling: the view
 //! does not change, and the flight never runs out of cells. All motion is twist integration
 //! and every placement goes through the geometry traits.
+//!
+//! `FK_RECORD=<dir>` flies on its own and saves every frame, for showing the flights off: see
+//! [`Recording`].
 
 // Each example includes this module and uses only its tilings or its manifolds.
 #![allow(dead_code)]
 
 use std::f64::consts::FRAC_PI_2;
+use std::path::PathBuf;
 
 use bevy_ecs::prelude::*;
 use fk_app::keymap::{Action, ActionKind, Binding, Bindings, KeyMap, KeyMapPlugin};
-use fk_app::{App, ButtonInput, CursorGrab, FixedUpdate, KeyCode, Startup, Update, WindowConfig};
+use fk_app::{
+    App, AppExit, ButtonInput, CursorGrab, FixedUpdate, KeyCode, Startup, Update, WindowConfig,
+};
 use fk_assets::{Cell, Tiling};
 use fk_geometry::{Geometry, GpuGeometry, GroupElement};
 use fk_math::Real;
@@ -23,7 +29,7 @@ use fk_math::nalgebra::Vector3;
 use fk_quotient::{ChartTag, Quotient};
 use fk_render::{
     Color, Instance, Lighting, MeshHandle, MeshInstances, Meshes, PostMode, PostSettings,
-    QuotientView, RenderPlugin, Sky, shapes, tangent,
+    QuotientView, RenderPlugin, Screenshots, Sky, shapes, tangent,
 };
 use fk_scene::{Camera, Pose, ScenePlugin, SceneSystems, Velocity};
 
@@ -222,6 +228,12 @@ fn launch(app: App) {
 /// Runs the flight through tilings.
 pub fn run<G: GpuGeometry>(setup: Setup) {
     let mut app = app::<G>(setup.name, setup.fog, setup.speeds);
+    let (cell, around) = setup.tilings[0];
+    if let Some(tiling) = Tiling::<G>::regular(cell, around) {
+        // A closed space's cells are all drawn: the flight goes all the way round them.
+        let closed = G::constant_curvature().is_some_and(|k| k > 0.0);
+        record::<G>(&mut app, tiling.neighbours(), !closed);
+    }
     app.add_systems(
         Startup,
         move |commands: Commands, meshes: ResMut<Meshes>| spawn::<G>(&setup, commands, meshes),
@@ -307,6 +319,7 @@ pub fn run_manifold<G: GpuGeometry>(manifold: Manifold<G>) {
             },
         )
         .add_systems(FixedUpdate, fold::<G>.after(SceneSystems::Integrate));
+    record::<G>(&mut app, manifold.quotient.generators(), true);
     launch(app);
 }
 
@@ -318,6 +331,104 @@ fn fold<G: Geometry>(folded: Res<Folded<G>>, mut rigs: Query<&mut Pose<G>, With<
             pose.0.renormalize();
         }
     }
+}
+
+/// A flight recorded frame by frame (`FK_RECORD=<dir>`): the rig flies `FK_RECORD_STEPS`
+/// (1) times across a face along the step that carries the origin's cell to the one most
+/// nearly ahead (a tiling's neighbour, a quotient's generator), turned first to look straight
+/// along it, and every frame of `FK_RECORD_FRAMES` (120) is saved as `<dir>/0000.png` and on,
+/// after a warm-up; then the app exits. The step is a symmetry of what is drawn, so the last
+/// frame leads back into the first.
+#[derive(Resource)]
+struct Recording<G: Geometry> {
+    dir: PathBuf,
+    frames: u32,
+    /// Frames drawn so far.
+    frame: u32,
+    /// The rig's pose at the first frame saved.
+    start: G::Isometry,
+    /// What the rig moves by each frame, in its own frame.
+    each: G::Isometry,
+    /// Whether the eye is carried back into the origin's cell meanwhile.
+    recentre: bool,
+}
+
+/// Frames drawn before the first saved, while the pipelines warm up.
+const RECORD_WARMUP: u32 = 60;
+
+/// Adds the [`Recording`] if `FK_RECORD` asks for one, flying along one of `steps` or its
+/// inverse.
+fn record<G: Geometry>(app: &mut App, steps: &[G::Isometry], recentre: bool) {
+    let Some(dir) = std::env::var_os("FK_RECORD").map(PathBuf::from) else {
+        return;
+    };
+    let number = |name: &str, default: u32| {
+        std::env::var(name)
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(default)
+    };
+    let (count, frames) = (
+        number("FK_RECORD_STEPS", 1),
+        number("FK_RECORD_FRAMES", 120),
+    );
+    let origin = G::origin();
+    let direction = |g: &G::Isometry| {
+        let v = G::log(&origin, &G::apply(g, &origin))?;
+        let c = Vector3::from_fn(|i, _| G::inner(&origin, &v, &G::origin_frame(i)));
+        Some(c.normalize())
+    };
+    let Some((step, ahead)) = steps
+        .iter()
+        .flat_map(|g| [*g, g.inverse()])
+        .filter_map(|g| Some((g, direction(&g)?)))
+        .max_by(|a, b| a.1.dot(&forward()).total_cmp(&b.1.dot(&forward())))
+    else {
+        tracing::warn!("nothing to fly along, no recording");
+        return;
+    };
+    let across = ahead - forward() * ahead.dot(&forward());
+    let start = if across.norm() < 1e-9 {
+        G::Isometry::identity()
+    } else {
+        let angle = ahead.dot(&forward()).clamp(-1.0, 1.0).acos();
+        rotation::<G>(forward(), across.normalize(), angle)
+    };
+    let twist = start.inverse().adjoint(&step.log()) * (Real::from(count) / Real::from(frames));
+    tracing::info!("recording {frames} frames into {}", dir.display());
+    app.insert_resource(Recording::<G> {
+        dir,
+        frames,
+        frame: 0,
+        start,
+        each: G::Isometry::exp(&twist),
+        recentre,
+    })
+    .add_systems(Update, recording::<G>);
+}
+
+fn recording<G: Geometry>(
+    mut recording: ResMut<Recording<G>>,
+    mut rigs: Query<&mut Pose<G>, With<Rig>>,
+    mut screenshots: ResMut<Screenshots>,
+    mut exit: ResMut<AppExit>,
+) {
+    let recording = &mut *recording;
+    for mut pose in &mut rigs {
+        if recording.frame <= RECORD_WARMUP {
+            pose.0 = recording.start;
+        } else {
+            pose.0 = pose.0.compose(&recording.each);
+            pose.0.renormalize();
+        }
+    }
+    if let Some(saved) = recording.frame.checked_sub(RECORD_WARMUP) {
+        screenshots.request(recording.dir.join(format!("{saved:04}.png")));
+        if saved + 1 >= recording.frames {
+            exit.request();
+        }
+    }
+    recording.frame += 1;
 }
 
 fn spawn_rig<G: Geometry>(commands: &mut Commands, far: Real) {
@@ -433,7 +544,14 @@ fn fly<G: Geometry>(
 }
 
 /// Out of the origin's cell, the rig is carried back by the step to the cell it is in.
-fn recentre<G: Geometry>(tilings: Res<Tilings<G>>, mut rigs: Query<&mut Pose<G>, With<Rig>>) {
+fn recentre<G: Geometry>(
+    tilings: Res<Tilings<G>>,
+    recording: Option<Res<Recording<G>>>,
+    mut rigs: Query<&mut Pose<G>, With<Rig>>,
+) {
+    if recording.is_some_and(|recording| !recording.recentre) {
+        return;
+    }
     let (tiling, ..) = &tilings.built[tilings.shown];
     let origin = G::origin();
     for mut pose in &mut rigs {

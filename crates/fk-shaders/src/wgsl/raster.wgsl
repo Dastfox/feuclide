@@ -29,6 +29,9 @@
 // one every mesh without a map samples. Bindings apart from the window's, which shares group 2.
 @group(2) @binding(3) var normal_maps: texture_2d_array<f32>;
 @group(2) @binding(4) var normal_sampler: sampler;
+// Where the maps flatten with distance from the eye: whole nearer than x, flat from y on; z 0
+// when they are off altogether.
+@group(2) @binding(5) var<uniform> normal_fade: vec4<f32>;
 
 struct Vertex {
     @location(0) position: vec4<f32>,
@@ -71,6 +74,11 @@ fn vertex(in: Vertex) -> Varyings {
     let far_side = in.color.w > 1.5;
     var out: Varyings;
     out.clip = geo_project_side(point, far_side);
+    // Through the same point of their pixels as the rays (`view.jitter`).
+    out.clip = vec4<f32>(
+        out.clip.xy + 2.0 * vec2<f32>(view.jitter.x, -view.jitter.y) / view.size * out.clip.w,
+        out.clip.zw,
+    );
     out.side = select(0.0, 1.0, far_side);
     out.point = point;
     out.normal = geo_apply_iso(iso, shaped.normal);
@@ -93,8 +101,15 @@ fn shadow_vertex(in: Vertex) -> @builtin(position) vec4<f32> {
 
 // The normal at `p` bent by the normal map: the map's normal in the frame of the unit normal,
 // the tangent along u (made square to it) and their cross product, turned by the handedness.
-fn mapped_normal(p: vec4<f32>, normal: vec4<f32>, uv: vec4<f32>, tangent: vec4<f32>) -> vec4<f32> {
-    let m = textureSample(normal_maps, normal_sampler, uv.xy, i32(uv.z)).xyz * 2.0 - 1.0;
+// Flattened `d` from the eye by `normal_fade`, or everywhere while the maps are off.
+fn mapped_normal(p: vec4<f32>, normal: vec4<f32>, uv: vec4<f32>, tangent: vec4<f32>, d: f32) -> vec4<f32> {
+    let sampled = textureSample(normal_maps, normal_sampler, uv.xy, i32(uv.z)).xyz * 2.0 - 1.0;
+    let faded = select(
+        step(normal_fade.x, d),
+        smoothstep(normal_fade.x, normal_fade.y, d),
+        normal_fade.y > normal_fade.x,
+    );
+    let m = mix(sampled, vec3<f32>(0.0, 0.0, 1.0), max(faded, 1.0 - normal_fade.z));
     let n = normal * inverseSqrt(max(geo_inner(p, normal, normal), 1e-12));
     let along = geo_project_tangent(p, tangent);
     let t = along - n * geo_inner(p, n, along);
@@ -110,7 +125,9 @@ fn mapped_normal(p: vec4<f32>, normal: vec4<f32>, uv: vec4<f32>, tangent: vec4<f
 @fragment
 fn fragment(in: Varyings) -> @location(0) vec4<f32> {
     let p = geo_normalize_point(in.point);
-    let n = mapped_normal(p, geo_project_tangent(p, in.normal), in.uv, in.tangent);
+    let far_side = in.side > 0.5;
+    let d = geo_seen_distance(p, far_side);
+    let n = mapped_normal(p, geo_project_tangent(p, in.normal), in.uv, in.tangent, d);
     let sun = geo_transport_from_eye(p, lighting.sun_direction);
     let facing = geo_inner(p, n, sun) * inverseSqrt(max(geo_inner(p, n, n) * geo_inner(p, sun, sun), 1e-12));
     // Cast shadows take the painted shadow colour, like the sides turned away from the light.
@@ -118,8 +135,6 @@ fn fragment(in: Varyings) -> @location(0) vec4<f32> {
     let light = mix(lighting.shadow_tint.rgb, lighting.sun_color.rgb, banded(facing) * shadow);
     let lit = in.color.rgb * (light + point_lights(p, n));
 
-    let far_side = in.side > 0.5;
-    let d = geo_seen_distance(p, far_side);
     // Fade fully into the sky before the far surface, so culling there is invisible. The fog
     // takes the colour of the sky behind the surface, glows included; a deformed vertex can
     // ask for more of it.

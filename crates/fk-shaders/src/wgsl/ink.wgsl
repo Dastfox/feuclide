@@ -3,11 +3,13 @@
 // colours, and every later effect (lenses, blur, saturation) bends and drains them too.
 //
 // Lines where the distance or the brightness jumps against the neighbours `ink.y` pixels away,
-// fading into the fog; the shadows hatched; laid on paper. The alpha (surface, sky, kept out of
-// the mosh) is passed on as it is.
+// fading into the fog; the shadows hatched; laid on paper. The sun and the moon are left as the
+// sky drew them, with no line round them. The alpha (surface, sky, kept out of the mosh) is
+// passed on as it is.
 
-#import fk::view::{view, pixel_to_ndc}
+#import fk::view::{view, lighting, pixel_to_ndc}
 #import fk::geometry::geo_depth_to_distance
+#import fk::sky::disc_cover
 
 struct Ink {
     // How much (0 off), its width in pixels, the depth and brightness jumps that draw a line.
@@ -58,6 +60,19 @@ fn ink_distance(at: vec2<i32>) -> f32 {
     return geo_depth_to_distance(depth, pixel_to_ndc(vec2<f32>(p) + 0.5));
 }
 
+// How much of the pixel `at` the sun or the moon covers, where nothing stands before the sky.
+fn ink_disc(at: vec2<i32>) -> f32 {
+    let size = vec2<i32>(view.size);
+    let p = clamp(at, vec2<i32>(0), size - 1);
+    if textureLoad(scene_depth, p, 0) > 0.0 {
+        return 0.0;
+    }
+    let ndc = pixel_to_ndc(vec2<f32>(p) + 0.5);
+    let dir = normalize(vec3<f32>(ndc / view.proj_scale, -1.0));
+    let above = smoothstep(-0.01, 0.02, dot(dir, lighting.sky_up.xyz));
+    return max(disc_cover(lighting.sun_disc, dir), disc_cover(lighting.moon_disc, dir)) * above;
+}
+
 fn ink_bright(at: vec2<i32>) -> f32 {
     let size = vec2<i32>(view.size);
     return luma(srgb_encode(textureLoad(scene_color, clamp(at, vec2<i32>(0), size - 1), 0).rgb));
@@ -78,7 +93,9 @@ fn fragment(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         let there = ink_distance(pixel + steps[i]);
         // Only the nearer side draws the line, so a silhouette is one line, not two.
         jump = max(jump, (there - here) / max(here, 1e-3));
-        edge = max(edge, abs(ink_bright(pixel + steps[i]) - bright));
+        // A disc's rim is no edge: the sky round the sun and the moon draws no line.
+        let open = 1.0 - ink_disc(pixel + steps[i]);
+        edge = max(edge, abs(ink_bright(pixel + steps[i]) - bright) * open);
     }
     let line = max(
         smoothstep(ink.ink.z, ink.ink.z * 2.0, jump),
@@ -94,5 +111,7 @@ fn fragment(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let hatch = max(one * dark, other * darker) * ink.color.a * near;
     var out = mix(color, color * ink.paper.rgb, ink.more.w);
     out = mix(out, ink.color.rgb, max(line * near, hatch));
-    return vec4<f32>(mix(color, out, ink.ink.x), image.a);
+    // On the sun and the moon, no ink at all.
+    let amount = ink.ink.x * (1.0 - ink_disc(pixel));
+    return vec4<f32>(mix(color, out, amount), image.a);
 }

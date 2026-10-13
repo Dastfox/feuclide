@@ -7,6 +7,7 @@ use raw_window_handle::{
 };
 
 use crate::App;
+use crate::progress::Progress;
 
 /// How the window opens.
 #[derive(Clone, Debug)]
@@ -127,18 +128,25 @@ pub struct Handover {
     next: Option<std::thread::JoinHandle<App>>,
     carry: Option<Carry>,
     going: bool,
+    progress: Option<Progress>,
 }
 
 impl Handover {
-    /// Builds the next app with `build` on a thread of its own, and starts it there.
+    /// Builds the next app with `build` on a thread of its own, and starts it there. The apps
+    /// `build` makes report their steps to the handover ([`step`](Self::step)).
     pub fn prepare(&mut self, build: impl FnOnce() -> App + Send + 'static) {
+        let progress = Progress::default();
+        let reported = progress.clone();
         let thread = std::thread::Builder::new()
             .name("next app".to_owned())
             .spawn(move || {
+                reported.watch_this_thread();
+                reported.step("building");
                 let mut app = build();
                 app.prepare();
                 app
             });
+        self.progress = Some(progress);
         match thread {
             Ok(thread) => self.next = Some(thread),
             Err(error) => tracing::error!("cannot prepare the next app: {error}"),
@@ -163,6 +171,13 @@ impl Handover {
         self.next = None;
         self.carry = None;
         self.going = false;
+        self.progress = None;
+    }
+
+    /// The step the app being prepared has reached ([`Progress`]), while one is.
+    pub fn step(&self) -> Option<String> {
+        self.next.as_ref()?;
+        self.progress.as_ref()?.current()
     }
 
     /// Whether an app is being prepared, or is ready.

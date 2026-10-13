@@ -16,7 +16,8 @@
 //! there at once. An [`Emitter`] places its sounds about the ear: its position is relative to
 //! the listener, x to the right, y up, −z ahead, so that the app gives it in whatever frame its
 //! eye has (camera-relative, as at the GPU boundary); they pan between the ears and fade with
-//! distance.
+//! distance. A [`Directional`] emitter places them more sharply: panned as far as asked, and
+//! dulled behind the head as the head shadows them, so that where they are can be told by ear.
 //!
 //! Every sound plays in a [`Channel`], channel 0 unless its [`Playback::channel`] says otherwise
 //! (an [`Emitter`]'s always in channel 0), each with a room and an outside of its own; the
@@ -410,6 +411,44 @@ impl Audio {
     /// ahead): heard fully within `near` and fading out to nothing at `far`, in the same units.
     /// Silent without a device or an ear.
     pub fn emitter(&self, at: &Vector3<Real>, near: Real, far: Real) -> Emitter {
+        self.placed(at, near, far, false)
+    }
+
+    /// A place to play sounds from as [`emitter`](Self::emitter) gives, but in the room
+    /// ([`Acoustics`], channel 0): heard through the reverb and never muffled as outside is.
+    pub fn emitter_in_room(&self, at: &Vector3<Real>, near: Real, far: Real) -> Emitter {
+        self.placed(at, near, far, true)
+    }
+
+    /// A place to play sounds from as [`emitter`](Self::emitter) gives (outside, channel 0),
+    /// placed as sharply about the ear as `directional` says, so that where it is can be heard.
+    pub fn directional_emitter(
+        &self,
+        at: &Vector3<Real>,
+        near: Real,
+        far: Real,
+        directional: &Directional,
+    ) -> Emitter {
+        let mut emitter = self.placed_with(at, near, far, false, directional);
+        emitter.set_position(at, 0.0);
+        emitter
+    }
+
+    /// An emitter on channel 0's outside track, or its room's when `in_room`.
+    fn placed(&self, at: &Vector3<Real>, near: Real, far: Real, in_room: bool) -> Emitter {
+        self.placed_with(at, near, far, in_room, &Directional::default())
+    }
+
+    /// An emitter on channel 0's outside track, or its room's when `in_room`, placed as
+    /// `directional` says.
+    fn placed_with(
+        &self,
+        at: &Vector3<Real>,
+        near: Real,
+        far: Real,
+        in_room: bool,
+        directional: &Directional,
+    ) -> Emitter {
         let Some(output) = &self.output else {
             return Emitter::default();
         };
@@ -419,19 +458,32 @@ impl Audio {
         let Some(listener) = output.listener.as_ref().map(ListenerHandle::id) else {
             return Emitter::default();
         };
-        let Some(Tracks {
-            outside: Some((track, _)),
-            ..
-        }) = output.channel(Channel::default())
-        else {
+        let Some(tracks) = output.channel(Channel::default()) else {
             return Emitter::default();
         };
-        let builder = SpatialTrackBuilder::new().distances(SpatialTrackDistances {
-            min_distance: near.max(1e-3) as f32,
-            max_distance: far.max(near + 1e-3) as f32,
+        let track = if in_room {
+            tracks.room.as_mut().map(|(track, _)| track)
+        } else {
+            tracks.outside.as_mut().map(|(track, _)| track)
+        };
+        let Some(track) = track else {
+            return Emitter::default();
+        };
+        let mut builder = SpatialTrackBuilder::new()
+            .distances(SpatialTrackDistances {
+                min_distance: near.max(1e-3) as f32,
+                max_distance: far.max(near + 1e-3) as f32,
+            })
+            .spatialization_strength(directional.pan.clamp(0.0, 1.0) as f32);
+        let shadow = directional.behind.map(|behind| {
+            let filter = builder.add_effect(FilterBuilder::new().cutoff(Outside::OPEN));
+            (filter, behind.clamp(20.0, Outside::OPEN))
         });
         match track.add_spatial_sub_track(listener, mint_of(at), builder) {
-            Ok(track) => Emitter { track: Some(track) },
+            Ok(track) => Emitter {
+                track: Some(track),
+                shadow,
+            },
             Err(error) => {
                 tracing::warn!("cannot place a sound: {error}");
                 Emitter::default()
@@ -448,11 +500,51 @@ fn mint_of(at: &Vector3<Real>) -> mint::Vector3<f32> {
     }
 }
 
-/// A place sounds play from, outside, about the ear: see [`Audio::emitter`]. Silent if made
-/// without a device ([`Emitter::default`]). Dropped, its sounds stop.
+/// How sharply a [`directional emitter`](Audio::directional_emitter) places its sounds about
+/// the ear.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Directional {
+    /// How far its sounds pan between the ears: 0 not at all (both ears alike), 1 fully (the
+    /// far ear all but silent when it is straight to one side). Plain emitters pan 0.75.
+    pub pan: Real,
+    /// The cutoff, in hertz, of the low-pass its sounds go through when straight behind the
+    /// head, as the head shadows them: none ahead or to the side, gliding in between. `None`,
+    /// they are as bright behind as ahead.
+    pub behind: Option<Real>,
+}
+
+impl Default for Directional {
+    /// As plain emitters place their sounds.
+    fn default() -> Self {
+        Self {
+            pan: 0.75,
+            behind: None,
+        }
+    }
+}
+
+impl Directional {
+    /// The cutoff of the low-pass for a sound at `at` about the ear, `behind` hertz straight
+    /// behind: open ahead and to the side, closing as it comes round behind.
+    pub fn cutoff(at: &Vector3<Real>, behind: Real) -> Real {
+        let Some(direction) = at.try_normalize(1e-6) else {
+            return Outside::OPEN;
+        };
+        // +z is behind: from the side (0) to straight behind (1), smoothly.
+        let t = (direction.z / 0.9).clamp(0.0, 1.0);
+        let t = t * t * (3.0 - 2.0 * t);
+        Outside::OPEN * (behind.clamp(20.0, Outside::OPEN) / Outside::OPEN).powf(t)
+    }
+}
+
+/// A place sounds play from, outside or in the room, about the ear: see [`Audio::emitter`],
+/// [`Audio::emitter_in_room`] and [`Audio::directional_emitter`]. Silent if made without a
+/// device ([`Emitter::default`]). Dropped, its sounds stop.
 #[derive(Debug, Default)]
 pub struct Emitter {
     track: Option<SpatialTrackHandle>,
+    /// The low-pass the head shadows it with behind, and its cutoff straight behind.
+    shadow: Option<(FilterHandle, Real)>,
 }
 
 impl Emitter {
@@ -460,6 +552,9 @@ impl Emitter {
     pub fn set_position(&mut self, at: &Vector3<Real>, fade: Real) {
         if let Some(track) = &mut self.track {
             track.set_position(mint_of(at), tween(fade));
+        }
+        if let Some((filter, behind)) = &mut self.shadow {
+            filter.set_cutoff(Directional::cutoff(at, *behind), tween(fade));
         }
     }
 
@@ -662,6 +757,30 @@ mod tests {
         assert_eq!(decibels_of(1.0), Decibels(0.0));
         assert!((decibels_of(0.5).0 + 6.0206).abs() < 1e-3);
         assert_eq!(decibels_of(0.0), Decibels::SILENCE);
+    }
+
+    #[test]
+    fn the_head_shadows_only_what_is_behind_it() {
+        let cutoff = |x, z| Directional::cutoff(&Vector3::new(x, 0.0, z), 1000.0);
+        assert_eq!(cutoff(0.0, -5.0), Outside::OPEN);
+        assert_eq!(cutoff(5.0, 0.0), Outside::OPEN);
+        assert!((cutoff(0.0, 5.0) - 1000.0).abs() < 1e-6);
+        let round = [0.0, 0.3, 0.6, 0.9, 1.2, 1.5].map(|a: Real| cutoff(a.cos(), a.sin()));
+        assert!(round.windows(2).all(|pair| pair[1] <= pair[0]));
+        assert_eq!(
+            Directional::cutoff(&Vector3::zeros(), 1000.0),
+            Outside::OPEN
+        );
+        let mut emitter = Audio::silent().directional_emitter(
+            &Vector3::new(0.0, 0.0, 3.0),
+            1.0,
+            10.0,
+            &Directional {
+                pan: 1.0,
+                behind: Some(800.0),
+            },
+        );
+        emitter.set_position(&Vector3::new(1.0, 0.0, 0.0), 0.1);
     }
 
     #[test]

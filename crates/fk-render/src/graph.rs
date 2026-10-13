@@ -1,6 +1,6 @@
 //! The render graph: surface, targets and the fixed pass order
 //! (the other eye's image, when there is one) → visibility → opaque → layer (while the lids show
-//! it) → ink → mosh → post → UI.
+//! it) → settle → ink → mosh → post → UI.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -25,8 +25,10 @@ use crate::post::PostPass;
 use crate::renderer::{FrameBindings, FrameView, GeometryRenderer, RendererFactory, RendererSetup};
 use crate::screenshot::{self, Screenshots};
 use crate::seen::DiscProbe;
+use crate::settle::SettlePass;
 use crate::shadow::{SHADOW_FORMAT, ShadowMap, ShadowView};
 use crate::sky::SkyPass;
+use crate::sky_image::{SkyImage, SkyImagePass};
 use crate::timing::GpuTimer;
 use crate::{Color, DiscShape, SkyDisc};
 use crate::{
@@ -114,7 +116,9 @@ pub(crate) struct RenderState<G: GpuGeometry> {
     sample_count: u32,
     renderers: Vec<Box<dyn GeometryRenderer<G>>>,
     sky: SkyPass,
+    sky_image: SkyImagePass,
     shadow_map: ShadowMap,
+    settle: SettlePass,
     ink: InkPass,
     mosh: MoshPass,
     post: PostPass,
@@ -145,6 +149,9 @@ pub(crate) fn start<G: GpuGeometry>(world: &mut World) {
     let factories = world
         .remove_resource::<RendererFactories<G>>()
         .unwrap_or_default();
+    if let Some(progress) = world.get_resource::<fk_app::Progress>() {
+        progress.step("compiling the shaders");
+    }
     let state = match (shared, window) {
         (Some(shared), _) => Ok(RenderState::<G>::on(
             shared,
@@ -333,6 +340,14 @@ impl<G: GpuGeometry> RenderState<G> {
             DEPTH_FORMAT,
             sample_count,
         );
+        let sky_image = SkyImagePass::new(&gpu, COLOR_FORMAT, DEPTH_FORMAT, sample_count);
+        let settle = SettlePass::new(
+            &gpu,
+            G::SHADER,
+            &frame_layout,
+            COLOR_FORMAT,
+            sample_count > 1,
+        );
         let ink = InkPass::new(
             &gpu,
             G::SHADER,
@@ -362,7 +377,9 @@ impl<G: GpuGeometry> RenderState<G> {
             sample_count,
             renderers,
             sky,
+            sky_image,
             shadow_map,
+            settle,
             ink,
             mosh,
             post,
@@ -475,6 +492,7 @@ impl<G: GpuGeometry> RenderState<G> {
             )
             .create_view(&Default::default()),
         };
+        self.settle.set_targets(&self.gpu, &color, &depth);
         self.ink.set_targets(&self.gpu, &color, &depth);
         self.mosh.set_targets(&self.gpu, &color, &depth);
         self.post
@@ -553,26 +571,10 @@ impl<G: GpuGeometry> RenderState<G> {
         if shadow.is_some() {
             self.shadow_map.resize(&self.gpu, shadows.size);
         }
-        let blocks = frame_blocks(
-            world,
-            view.as_ref(),
-            &lighting,
-            shadow.as_ref(),
-            self.shadow_map.size,
-            size,
-        );
-        self.frame.write(&self.gpu.queue, &blocks);
         let post = world
             .get_resource::<PostSettings>()
             .cloned()
             .unwrap_or_default();
-        self.post.prepare(&self.gpu, &post);
-        self.overlay.prepare(
-            &self.gpu,
-            world.get_resource::<Overlay>(),
-            [size.width, size.height],
-        );
-        self.ink.prepare(&self.gpu, &post.ink);
         // How the eye moved since the last frame: its coordinates now to its coordinates then.
         let motion = match (&view, &self.last_eye) {
             (Some(view), Some(last)) => {
@@ -581,6 +583,40 @@ impl<G: GpuGeometry> RenderState<G> {
             _ => Matrix4::identity(),
         };
         self.last_eye = view.as_ref().map(|view| view.eye.isometry);
+        // The point of their pixels this frame's rays and vertices go through.
+        let jitter = self.settle.prepare(&self.gpu, &post.settle, &motion);
+        let mut blocks = frame_blocks(
+            world,
+            view.as_ref(),
+            &lighting,
+            shadow.as_ref(),
+            self.shadow_map.size,
+            size,
+        );
+        blocks.view.jitter = Vec2f(jitter);
+        self.frame.write(&self.gpu.queue, &blocks);
+        self.post.prepare(&self.gpu, &post);
+        self.overlay.prepare(
+            &self.gpu,
+            world.get_resource::<Overlay>(),
+            [size.width, size.height],
+        );
+        self.ink.prepare(&self.gpu, &post.ink);
+        let hung = world.get_resource::<SkyImage>();
+        let axes = view
+            .as_ref()
+            .zip(hung)
+            .and_then(|(view, hung)| sky_image_axes(view, hung));
+        self.sky_image.prepare(
+            &self.gpu,
+            hung,
+            axes,
+            (
+                blocks.view.proj_scale.0,
+                blocks.view.size.0,
+                world.get_resource::<Time>().map_or(0.0, Time::elapsed) as f32,
+            ),
+        );
         let delta = world.resource::<Time>().delta() as f32;
         let carried = if self.mosh.starts(&post.mosh) {
             world
@@ -689,6 +725,7 @@ impl<G: GpuGeometry> RenderState<G> {
                 for renderer in &self.renderers {
                     renderer.render(&mut pass, &bindings);
                 }
+                self.sky_image.render(&mut pass);
             }
         }
         self.timer.mark(&mut encoder, "opaque");
@@ -737,6 +774,12 @@ impl<G: GpuGeometry> RenderState<G> {
             }
         }
         self.timer.mark(&mut encoder, "layer");
+
+        // Settled over frames, before the ink so that its lines are drawn crisp on the settled
+        // image, and before the mosh so that the mosh holds it.
+        self.settle
+            .render(&mut encoder, &targets.color, &self.frame.bind_group);
+        self.timer.mark(&mut encoder, "settle");
 
         // Ink, before the mosh so that it is moshed with the image.
         self.ink
@@ -994,6 +1037,7 @@ pub(crate) fn frame_blocks<G: GpuGeometry>(
         near: near as f32,
         far: far as f32,
         size: Vec2f([width, height]),
+        jitter: Vec2f([0.0; 2]),
     };
 
     let origin = G::origin();
@@ -1106,6 +1150,33 @@ pub(crate) fn frame_blocks<G: GpuGeometry>(
     }
 }
 
+/// A direction at the root's origin as coordinates in the eye's frame, as the sky's discs are
+/// carried there.
+fn in_eye_frame<G: GpuGeometry>(view: &ActiveView<G>, direction: &Vector3<Real>) -> Vector3<Real> {
+    let origin = G::origin();
+    let direction = tangent::<G>(&direction.normalize());
+    let inverse = view.eye.isometry.inverse();
+    let at = G::apply(&inverse, &origin);
+    let moved = G::apply_tangent(&inverse, &direction);
+    let at_eye = G::parallel_transport(&at, &origin, &moved);
+    Vector3::from_fn(|i, _| G::inner(&origin, &at_eye, &G::origin_frame(i)))
+}
+
+/// The [`SkyImage`]'s centre, right and up in the eye's frame, unit vectors; `None` when its
+/// direction or its up are no directions.
+fn sky_image_axes<G: GpuGeometry>(
+    view: &ActiveView<G>,
+    hung: &SkyImage,
+) -> Option<[Vector3<Real>; 3]> {
+    if hung.direction.norm() < 1e-9 || hung.up.norm() < 1e-9 {
+        return None;
+    }
+    let centre = in_eye_frame(view, &hung.direction).try_normalize(1e-9)?;
+    let up = in_eye_frame(view, &hung.up);
+    let up = (up - centre * up.dot(&centre)).try_normalize(1e-9)?;
+    Some([centre, centre.cross(&up), up])
+}
+
 /// The point lights that reach nearest the eye, made relative to it in f64 (`eye⁻¹ ∘ light`),
 /// and how many there are.
 fn point_lights<G: GpuGeometry>(
@@ -1143,9 +1214,10 @@ fn point_lights<G: GpuGeometry>(
 }
 
 pub(crate) fn frame_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    // Compute too: the ray marcher traces the pixels at its edges in a compute pass.
     let uniform = |binding| wgpu::BindGroupLayoutEntry {
         binding,
-        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,

@@ -61,6 +61,18 @@ impl<G: Geometry> std::fmt::Debug for Elsewhere<G> {
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ShowsElsewhere;
 
+/// Which eye draws an entity's meshes in the raster path; without it, both do. A thing missing
+/// from a mirror is seen by the [`Eye`](Self::Eye) only; a thing only a mirror or a portal shows,
+/// by the other eye ([`Elsewhere`](Self::Elsewhere)) only. Seen by the other eye only, it casts
+/// no shadow into the frame's own image.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeenBy {
+    /// Only the frame's own eye: left out of the [`Elsewhere`] image.
+    Eye,
+    /// Only the [`Elsewhere`] eye: left out of the frame's own image.
+    Elsewhere,
+}
+
 /// The other eye's image: what the opaque pass draws into, with the frame's formats and sample
 /// count, and the bind group the windows read it through.
 pub(crate) struct ElsewhereTargets {

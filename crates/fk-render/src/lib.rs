@@ -23,7 +23,7 @@
 //! 3. **Opaque.** One pass into a linear HDR colour target and a depth target, multisampled
 //!    ([`Multisampling`], 4× by default) and resolved at the end: first the
 //!    [`Sky`] behind everything (a fullscreen triangle that leaves depth alone), then every
-//!    renderer. The image's alpha is 1 where a surface was drawn and 0 on the sky, so what
+//!    renderer, then the [`SkyImage`] over all of it when one is hung. The image's alpha is 1 where a surface was drawn and 0 on the sky, so what
 //!    only applies to surfaces (the posterize) follows the image. While a [`Mosh`] runs, it
 //!    then replaces the resolved image, alpha included.
 //! 4. **Post.** A fullscreen pass to the window. [`PostSettings`] selects the image or the
@@ -71,9 +71,11 @@ mod raster;
 mod renderer;
 mod screenshot;
 mod seen;
+mod settle;
 mod shadow;
 pub mod shapes;
 mod sky;
+mod sky_image;
 mod timing;
 
 use std::marker::PhantomData;
@@ -84,10 +86,10 @@ use fk_geometry::GpuGeometry;
 pub use color::Color;
 pub use cull::Frustum;
 pub use deform::{CastsNoShadow, Deform, DeformHandle, DeformShader, Deforms};
-pub use elsewhere::{Elsewhere, ShowsElsewhere};
+pub use elsewhere::{Elsewhere, SeenBy, ShowsElsewhere};
 pub use frame::{
     Afterimage, DiscShape, Gauge, Ink, LayerRender, Lids, Lighting, Mark, Mosh, MoshKind,
-    MoshPatch, Multisampling, PostMode, PostSettings, RenderStats, Shadows, Sky, SkyDisc,
+    MoshPatch, Multisampling, PostMode, PostSettings, RenderStats, Settle, Shadows, Sky, SkyDisc,
     TextPanel, Tunnel, Vsync, Warp, WorldUniforms,
 };
 pub use gpu::{Gpu, Vec2f, Vec4f, matrix_columns};
@@ -109,13 +111,14 @@ pub use renderer::{
 pub use screenshot::Screenshots;
 pub use seen::DiscsSeen;
 pub use shadow::ShadowView;
+pub use sky_image::SkyImage;
 pub use timing::GpuTimings;
 
 /// Draws the scene of geometry `G` into the window, with the [`RasterPipeline`] and then the
 /// [`RayMarchPipeline`].
 ///
 /// Inserts [`Meshes`], [`Deforms`], [`Sdfs`], [`RayMarching`], [`Lighting`], [`Shadows`],
-/// [`WorldUniforms`], [`PostSettings`], [`RenderStats`], [`Vsync`], [`Screenshots`], [`CarriedImage`], [`Elsewhere`] and [`Overlay`]. The device ([`Gpu`]) is opened in [`Startup`] once the window exists;
+/// [`WorldUniforms`], [`PostSettings`], [`RenderStats`], [`Vsync`], [`Screenshots`], [`CarriedImage`], [`Elsewhere`], [`Overlay`] and [`SkyImage`]. The device ([`Gpu`]) is opened in [`Startup`] once the window exists;
 /// without a window nothing is drawn. Once it draws, it also writes [`DiscsSeen`].
 ///
 /// For look development, setting `FK_CAPTURE` to a file path saves one screenshot there after
@@ -151,6 +154,7 @@ impl<G: GpuGeometry> Plugin for RenderPlugin<G> {
             .init_resource::<CarriedImage>()
             .init_resource::<Elsewhere<G>>()
             .init_resource::<Overlay>()
+            .init_resource::<SkyImage>()
             .add_systems(Startup, graph::start::<G>)
             .add_systems(Update, (screenshot::capture_once, perf::record))
             .add_systems(Render, graph::render::<G>);

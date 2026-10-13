@@ -17,7 +17,11 @@
 //
 // Entry points: `vertex` (fullscreen triangle); `fragment` (full resolution: colour, depth,
 // misses discarded); `fragment_half` (into two offscreen targets: colour with alpha 1 on a hit,
-// and the distance); `composite` (those targets brought up to full resolution, with depth);
+// and the distance); `composite` (those targets brought up to full resolution, with depth:
+// between four pixels marched that agree, what lies between them, and elsewhere, at edges, the
+// pixel's own ray traced at full resolution);
+// `classify`, `finalize` and `refine` (compute: the pixels whose own rays the composite
+// needs, listed and traced at full resolution together);
 // `fragment_coarse` (one cone per block of `march.paint.z` pixels, into the coarse target the
 // other two start their rays from, `coarse_start`). Rays stop where the scene marched ahead of
 // this one is (`ahead_distance`, `march.paint.w`): what is behind it is never marched.
@@ -26,7 +30,7 @@
 #import fk::geometry::{
     geo_apply_iso, geo_normalize_point, geo_project_tangent, geo_inner, geo_transport_from_eye,
     geo_point_from_eye, geo_log_origin, geo_fog, geo_pixel_footprint, geo_distance_to_depth,
-    geo_distance, geo_bisector_distance,
+    geo_distance, geo_bisector_distance, geo_project,
 }
 #import fk::sky::sky_haze
 #import fk::paint::{banded, point_lights}
@@ -43,6 +47,25 @@
 #endif
 
 const BIG: f32 = 3.4e38;
+
+// Pixels across the tiles of a scene marched one tile in each square of them
+// (`march.interleave`).
+const INTERLEAVED: u32 = 8u;
+
+// Added to the alpha of a pixel carried from the last frame rather than marched, while the image
+// settles over frames (`march.interleave.w`); the settle pass takes it off.
+const CARRIED: f32 = 8.0;
+
+// The alpha `a` without the mark of a pixel carried.
+fn unmarked(a: f32) -> f32 {
+    return select(a, a - CARRIED, a >= CARRIED - 0.5);
+}
+
+// Which of its square of `march.interleave.x` tiles across the tile `tile` is.
+fn interleaved_tile(tile: vec2<u32>) -> u32 {
+    let n = u32(march.interleave.x);
+    return tile.x % n + n * (tile.y % n);
+}
 
 @vertex
 fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -88,6 +111,10 @@ fn nearest_copy(p: vec4<f32>) -> mat4x4<f32> {
 // Where `p` (embedded, in the eye's frame) is in the scene's coordinates: in the nearest copy
 // of the scene, in a quotient.
 fn scene_point(p: vec4<f32>) -> vec3<f32> {
+    // Out of a quotient there is one copy: no need to ask the field which is nearest.
+    if march.fold.count.x < 0.5 {
+        return scene_point_by(deck, p);
+    }
     return scene_point_by(nearest_copy(p), p);
 }
 
@@ -178,8 +205,25 @@ fn limit_at(pixel: vec2<f32>) -> f32 {
         return BIG;
     }
     let size = vec2<i32>(textureDimensions(ahead_distance));
-    let texel = clamp(vec2<i32>(floor(pixel / abs(k))), vec2<i32>(0), size - 1);
-    let d = textureLoad(ahead_distance, texel, 0).r;
+    var d = 0.0;
+    if abs(k) < 1.5 {
+        d = textureLoad(ahead_distance, clamp(vec2<i32>(floor(pixel)), vec2<i32>(0), size - 1), 0).r;
+    } else {
+        // Marched coarser than the window: hidden only where all four of its pixels round
+        // this one are, and no nearer than the farthest of them.
+        let base = vec2<i32>(floor(pixel / abs(k) - 0.5));
+        var nearest = BIG;
+        d = 0.0;
+        for (var i = 0; i < 4; i++) {
+            let texel = clamp(base + vec2<i32>(i % 2, i / 2), vec2<i32>(0), size - 1);
+            let here = textureLoad(ahead_distance, texel, 0).r;
+            nearest = min(nearest, here);
+            d = max(d, here);
+        }
+        if nearest <= 0.0 {
+            return BIG;
+        }
+    }
     if d <= 0.0 {
         return BIG;
     }
@@ -210,8 +254,16 @@ fn ray_advance(ray: Ray, s: f32) -> Ray {
 }
 
 // Footprint of the hit threshold at distance `t`, in eye units.
+// Window pixels per pixel of the ray being traced: the scene's (`march.shading.z`), but one
+// for a pixel's own ray traced at full resolution where the composite finds an edge.
+var<private> traced_pixels: f32 = 0.0;
+
+fn pixels() -> f32 {
+    return select(march.shading.z, traced_pixels, traced_pixels > 0.0);
+}
+
 fn threshold(t: f32) -> f32 {
-    return march.settings.w * march.shading.z * geo_pixel_footprint(t);
+    return march.settings.w * pixels() * geo_pixel_footprint(t);
 }
 
 struct Hit {
@@ -261,7 +313,7 @@ fn trace(dir: vec3<f32>, start: vec2<f32>, limit: f32) -> Hit {
             omega = 1.0;
             relaxed = 1.0;
         } else {
-            relaxed = select(omega, 1.0, coned && radius < 4.0 * threshold(ray.t));
+            relaxed = select(omega, 1.0, coned && radius < 3.0 * threshold(ray.t));
             // Never farther than just past a face of the quotient's domain unfolded: the field
             // holds the copies in the neighbouring domains, not the ones beyond.
             let room = fold_room(ray_point(ray)) + threshold(ray.t);
@@ -321,6 +373,12 @@ fn cone(dir: vec3<f32>, n: f32) -> vec2<f32> {
 fn fragment_coarse(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     march_cone = true;
     let n = march.paint.z;
+    // A block that is a tile carried this frame (`march.interleave`) marches no rays.
+    if march.interleave.x > 1.5 && march.interleave.z > 0.5 && u32(n) == INTERLEAVED {
+        if interleaved_tile(vec2<u32>(frag.xy)) != u32(march.interleave.y) {
+            return vec4<f32>(0.0);
+        }
+    }
     // The middle of the block, in window pixels.
     let ndc = pixel_to_ndc(frag.xy * n);
     return vec4<f32>(cone(pixel_dir(ndc), n), 0.0, 0.0);
@@ -340,6 +398,9 @@ fn normal_at(p: vec4<f32>, h: f32) -> vec4<f32> {
 fn shade(hit: Hit) -> vec3<f32> {
     let p = geo_normalize_point(ray_point(hit.ray));
     let t = hit.ray.t;
+    // The colour before the normal: it is asked where the march last asked the field, which
+    // a field may remember.
+    let base = sdf_color(scene_point(p));
     let lit_by = clamp(march.paint.x, 0.0, 1.0);
     var light = vec3<f32>(1.0);
     // A scene that takes none of the light needs no normal: four evaluations of its field.
@@ -353,7 +414,7 @@ fn shade(hit: Hit) -> vec3<f32> {
         let occlusion = clamp(1.0 - march.shading.x * hit.effort, 0.0, 1.0);
         light = mix(vec3<f32>(1.0), painted * occlusion, lit_by);
     }
-    let lit = sdf_color(scene_point(p)) * light;
+    let lit = base * light;
     let fogged = max(geo_fog(t, lighting.fog_density), smoothstep(0.85 * view.far, view.far, t));
     let fog = fogged * clamp(march.paint.y, 0.0, 1.0);
     let haze = 1.0 - (1.0 - fog) * (1.0 - clamp(march.shading.y, 0.0, 1.0));
@@ -376,6 +437,13 @@ fn surface_alpha(hit: Hit) -> f32 {
     return 1.0;
 }
 
+// Where the ray through `pixel` (window pixels, a pixel's middle) goes through it this frame, in
+// normalized device coordinates: its middle, or another point of it while the image settles over
+// frames (`view.jitter`).
+fn ray_ndc(pixel: vec2<f32>) -> vec2<f32> {
+    return pixel_to_ndc(pixel + view.jitter);
+}
+
 // The pixel's direction at the eye; every geometry's projection maps directions alike.
 fn pixel_dir(ndc: vec2<f32>) -> vec3<f32> {
     return normalize(vec3<f32>(ndc / view.proj_scale, -1.0));
@@ -388,7 +456,7 @@ struct Surface {
 
 @fragment
 fn fragment(@builtin(position) frag: vec4<f32>) -> Surface {
-    let ndc = pixel_to_ndc(frag.xy);
+    let ndc = ray_ndc(frag.xy);
     let hit = trace(pixel_dir(ndc), start_at(frag.xy), limit_at(frag.xy));
     if !hit.hit {
         discard;
@@ -407,26 +475,223 @@ struct Half {
 
 @fragment
 fn fragment_half(@builtin(position) frag: vec4<f32>) -> Half {
-    let ndc = pixel_to_ndc(frag.xy * march.shading.z);
     let pixel = frag.xy * march.shading.z;
-    let hit = trace(pixel_dir(ndc), start_at(pixel), limit_at(pixel));
+    let ndc = ray_ndc(pixel);
+    let limit = limit_at(pixel);
+    let hit = trace(pixel_dir(ndc), start_at(pixel), limit);
     if !hit.hit {
-        return Half(vec4<f32>(0.0), 0.0);
+        // Nothing, or, where the scene ahead stopped it, -1: hidden, not empty.
+        return Half(vec4<f32>(0.0), select(0.0, -1.0, limit < BIG));
     }
     return Half(vec4<f32>(shade(hit), surface_alpha(hit)), hit.ray.t);
 }
 
-@group(2) @binding(0) var half_color: texture_2d<f32>;
-@group(2) @binding(1) var half_distance: texture_2d<f32>;
+// A scene marched one tile in each square of them (`march.interleave`): its last frame's image, colour and
+// distance, the pixels not marched this frame carried from it.
+@group(2) @binding(12) var last_color: texture_2d<f32>;
+@group(2) @binding(13) var last_distance: texture_2d<f32>;
+
+// The pixel `pixel` (window pixels, a pixel's middle) as the last frame had it, found where the
+// eye's motion took it (by the distance the last frame had there), or, come into view from out
+// of the last image, the nearest it has at its edge: its colour and distance (nothing behind the
+// last eye).
+fn carried(pixel: vec2<f32>) -> Half {
+    let size = vec2<i32>(textureDimensions(last_distance));
+    var d = textureLoad(last_distance, clamp(vec2<i32>(pixel), vec2<i32>(0), size - 1), 0).r;
+    if d <= 0.0 {
+        d = view.far;
+    }
+    let point = geo_point_from_eye(pixel_dir(pixel_to_ndc(pixel)), d);
+    let clip = geo_project(geo_apply_iso(march.carry, point));
+    if clip.w <= 1e-4 {
+        return Half(vec4<f32>(0.0), 0.0);
+    }
+    let last = vec2<f32>(0.5 * (clip.x / clip.w + 1.0), 0.5 * (1.0 - clip.y / clip.w)) * view.size;
+    let at = clamp(vec2<i32>(floor(last)), vec2<i32>(0), size - 1);
+    return Half(textureLoad(last_color, at, 0), textureLoad(last_distance, at, 0).r);
+}
+
+// Every pixel of a scene marched one tile in each square of them, carried from its last frame;
+// the tiles marched this frame are drawn over them (`vertex_tiles`).
+@fragment
+fn fragment_carry(@builtin(position) frag: vec4<f32>) -> Half {
+    var last = carried(frag.xy);
+    last.color.a = unmarked(last.color.a);
+    if march.interleave.w > 0.5 {
+        last.color.a += CARRIED;
+    }
+    return last;
+}
+
+// The tiles of a scene marched one in each square of them that are marched this frame, as two
+// triangles each, `instance` the tile among them.
+@vertex
+fn vertex_tiles(
+    @builtin(vertex_index) index: u32,
+    @builtin(instance_index) instance: u32,
+) -> @builtin(position) vec4<f32> {
+    let n = max(u32(march.interleave.x), 1u);
+    let marched = u32(march.interleave.y);
+    let first = vec2<u32>(marched % n, marched / n);
+    let tiles = (vec2<u32>(view.size) + INTERLEAVED - 1u) / INTERLEAVED;
+    let across = max((tiles.x + n - 1u - first.x) / n, 1u);
+    let tile = first + n * vec2<u32>(instance % across, instance / across);
+    var corners = array<vec2<u32>, 6>(
+        vec2<u32>(0u, 0u), vec2<u32>(1u, 0u), vec2<u32>(0u, 1u),
+        vec2<u32>(1u, 0u), vec2<u32>(1u, 1u), vec2<u32>(0u, 1u),
+    );
+    let pixel = min(vec2<f32>((tile + corners[index]) * INTERLEAVED), view.size);
+    let uv = pixel / view.size;
+    return vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
+}
+
+@group(3) @binding(0) var half_color: texture_2d<f32>;
+@group(3) @binding(1) var half_distance: texture_2d<f32>;
+// The pixels whose own rays are traced at full resolution (`classify`, `refine`): their list,
+// how many, the dispatch over them (x, y, z, and how many again, read by `refine`), and what
+// their rays found, read back by `composite`.
+@group(3) @binding(4) var<storage, read_write> edge_list: array<u32>;
+@group(3) @binding(5) var<storage, read_write> edge_count: atomic<u32>;
+@group(3) @binding(10) var<storage, read_write> edge_args: array<u32, 4>;
+@group(3) @binding(11) var<storage, read> edge_found: array<u32, 4>;
+@group(3) @binding(6) var refined_color_out: texture_storage_2d<rgba16float, write>;
+@group(3) @binding(7) var refined_distance_out: texture_storage_2d<r32float, write>;
+@group(3) @binding(8) var refined_color: texture_2d<f32>;
+@group(3) @binding(9) var refined_distance: texture_2d<f32>;
+
+// How far apart the four pixels round a pixel may be and still be one surface: in each
+// channel of their colour (linear), and in distance, as a share of the nearest.
+const COMPOSITE_COLOUR: f32 = 0.012;
+const COMPOSITE_DEPTH: f32 = 0.1;
+
+// What the composite shows at `pixel` (window pixels, a pixel's middle) of a scene marched at
+// half resolution: `kind` 0 nothing (the sky, or hidden by the scene ahead), 1 what lies
+// between the four pixels marched round it (`colour`, `distance`), 2 its own ray, traced at
+// full resolution (an edge, a crease or a fine thing between them).
+struct Between {
+    kind: u32,
+    colour: vec4<f32>,
+    distance: f32,
+}
+
+fn between(pixel: vec2<f32>) -> Between {
+    let k = march.shading.z;
+    let size = vec2<i32>(textureDimensions(half_color));
+    // The four pixels marched round this one, and where it falls between them.
+    let at = pixel / k - 0.5;
+    let base = vec2<i32>(floor(at));
+    let f = at - floor(at);
+    let t00 = clamp(base, vec2<i32>(0), size - 1);
+    let t11 = clamp(base + vec2<i32>(1), vec2<i32>(0), size - 1);
+    let t10 = vec2<i32>(t11.x, t00.y);
+    let t01 = vec2<i32>(t00.x, t11.y);
+    let c00 = textureLoad(half_color, t00, 0);
+    let c10 = textureLoad(half_color, t10, 0);
+    let c01 = textureLoad(half_color, t01, 0);
+    let c11 = textureLoad(half_color, t11, 0);
+    let d00 = textureLoad(half_distance, t00, 0).r;
+    let d10 = textureLoad(half_distance, t10, 0).r;
+    let d01 = textureLoad(half_distance, t01, 0).r;
+    let d11 = textureLoad(half_distance, t11, 0).r;
+    // One surface across them: all four the same kind (sky, or surface with the same alpha),
+    // the same colour, and no step in distance. Then this pixel is what lies between them.
+    let low = min(min(c00, c10), min(c01, c11));
+    let high = max(max(c00, c10), max(c01, c11));
+    let near = min(min(d00, d10), min(d01, d11));
+    let far = max(max(d00, d10), max(d01, d11));
+    if high.a < 0.5 {
+        // No surface round it: the sky, unless the scene ahead hid one of them and not this
+        // pixel, which may then show something the four did not.
+        if near >= 0.0 || limit_at(pixel) < BIG {
+            return Between(0u, vec4<f32>(0.0), 0.0);
+        }
+        return Between(2u, vec4<f32>(0.0), 0.0);
+    }
+    if high.a - low.a < 0.5
+        && all(high.rgb - low.rgb <= vec3<f32>(COMPOSITE_COLOUR))
+        && far - near <= COMPOSITE_DEPTH * near
+    {
+        let top = mix(c00, c10, f.x);
+        let bottom = mix(c01, c11, f.x);
+        let colour = vec4<f32>(mix(top.rgb, bottom.rgb, f.y), c00.a);
+        let d = mix(mix(d00, d10, f.x), mix(d01, d11, f.x), f.y);
+        return Between(1u, colour, d);
+    }
+    return Between(2u, vec4<f32>(0.0), 0.0);
+}
+
+// Lists the pixels whose own rays the composite needs, one invocation a window pixel.
+@compute @workgroup_size(8, 8)
+fn classify(@builtin(global_invocation_id) id: vec3<u32>) {
+    let size = vec2<u32>(view.size);
+    if id.x >= size.x || id.y >= size.y {
+        return;
+    }
+    if between(vec2<f32>(id.xy) + 0.5).kind == 2u {
+        let i = atomicAdd(&edge_count, 1u);
+        edge_list[i] = id.x | (id.y << 16u);
+    }
+}
+
+// The dispatch over the pixels listed, 64 to a group.
+@compute @workgroup_size(1)
+fn finalize() {
+    let n = atomicLoad(&edge_count);
+    edge_args[0] = (n + 63u) / 64u;
+    edge_args[1] = 1u;
+    edge_args[2] = 1u;
+    edge_args[3] = n;
+}
+
+// Traces the rays of the pixels listed at full resolution: none of a group's lanes waits on
+// another's pixel.
+@compute @workgroup_size(64)
+fn refine(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= edge_found[3] {
+        return;
+    }
+    let packed = edge_list[id.x];
+    let texel = vec2<u32>(packed & 0xffffu, packed >> 16u);
+    let pixel = vec2<f32>(texel) + 0.5;
+    traced_pixels = 1.0;
+    let ndc = ray_ndc(pixel);
+    let hit = trace(pixel_dir(ndc), start_at(pixel), limit_at(pixel));
+    var colour = vec4<f32>(0.0);
+    var d = 0.0;
+    if hit.hit {
+        colour = vec4<f32>(shade(hit), surface_alpha(hit));
+        d = hit.ray.t;
+    }
+    textureStore(refined_color_out, texel, colour);
+    textureStore(refined_distance_out, texel, vec4<f32>(d, 0.0, 0.0, 0.0));
+}
 
 @fragment
 fn composite(@builtin(position) frag: vec4<f32>) -> Surface {
-    let size = vec2<i32>(textureDimensions(half_color));
-    let texel = clamp(vec2<i32>(frag.xy / march.shading.z), vec2<i32>(0), size - 1);
-    let color = textureLoad(half_color, texel, 0);
-    if color.a < 0.5 {
-        discard;
+    let k = march.shading.z;
+    let ndc = ray_ndc(frag.xy);
+    if k < 1.5 {
+        // Marched at full resolution (a scene ahead): each pixel is its own.
+        let size = vec2<i32>(textureDimensions(half_color));
+        let texel = clamp(vec2<i32>(frag.xy), vec2<i32>(0), size - 1);
+        let color = textureLoad(half_color, texel, 0);
+        if unmarked(color.a) < 0.5 {
+            discard;
+        }
+        return Surface(color, geo_distance_to_depth(textureLoad(half_distance, texel, 0).r, ndc));
     }
-    let d = textureLoad(half_distance, texel, 0).r;
-    return Surface(color, geo_distance_to_depth(d, pixel_to_ndc(frag.xy)));
+    let here = between(frag.xy);
+    if here.kind == 1u {
+        return Surface(here.colour, geo_distance_to_depth(here.distance, ndc));
+    }
+    if here.kind == 2u {
+        // Its own ray, traced by `refine`.
+        let texel = vec2<i32>(frag.xy);
+        let colour = textureLoad(refined_color, texel, 0);
+        if colour.a >= 0.5 {
+            let d = textureLoad(refined_distance, texel, 0).r;
+            return Surface(colour, geo_distance_to_depth(d, ndc));
+        }
+    }
+    discard;
 }

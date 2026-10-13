@@ -329,6 +329,46 @@ pub struct Ink {
     pub paper_amount: Real,
 }
 
+/// The image settled over frames, against the shimmer of what is finer than a pixel: each frame
+/// the ray-marched rays and the raster path's vertices go through another point of their pixels,
+/// and a pass of its own, after the opaque pass and before the [`Ink`] (drawn crisp on the
+/// settled image), blends the image with
+/// the last ones, found again where the eye's motion took them (by their distance, exactly
+/// however the eye turned), so that each pixel comes out as the average over it. The engine
+/// gives it no meaning.
+///
+/// The last images are dropped where something came in front or went, and held to the colours
+/// round each pixel inside surfaces, and everywhere while the eye moves more than
+/// [`still`](Self::still), so what moves leaves no trail; at edges while the eye is held still,
+/// they are not, and even what is finer than a pixel settles.
+/// A pixel a scene marched one tile in a square of them carried rather than marched
+/// ([`RayMarched::interleave`](crate::RayMarched::interleave)) brings nothing new, and the last
+/// images are kept there as they are.
+/// Off ([`frames`](Self::frames) 1 or less, the default), that pass is skipped, every ray goes
+/// through the middle of its pixel and the image is exactly as without it. On, it costs one
+/// fullscreen pass and a copy.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Settle {
+    /// About how many frames the image settles over: each frame's share of it is one over this.
+    pub frames: Real,
+    /// How far the eye's motion may carry a pixel in a frame, in pixels, while the eye is still
+    /// held still.
+    pub still: Real,
+    /// Each frame's share of the image while the eye moves, carried pixels too, 0 to 1: the
+    /// more, the less the last images (found again between their pixels) soften it as it turns.
+    pub moving: Real,
+}
+
+impl Default for Settle {
+    fn default() -> Self {
+        Self {
+            frames: 0.0,
+            still: 0.1,
+            moving: 0.5,
+        }
+    }
+}
+
 impl Default for Ink {
     fn default() -> Self {
         Self {
@@ -742,6 +782,8 @@ pub struct PostSettings {
     pub layer: LayerRender,
     /// The inked look, off by default.
     pub ink: Ink,
+    /// The image settled over frames, off by default.
+    pub settle: Settle,
 }
 
 impl Default for PostSettings {
@@ -767,6 +809,7 @@ impl Default for PostSettings {
             warps: Vec::new(),
             layer: LayerRender::default(),
             ink: Ink::default(),
+            settle: Settle::default(),
         }
     }
 }
@@ -788,6 +831,8 @@ pub(crate) struct ViewBlock {
     pub near: f32,
     pub far: f32,
     pub size: Vec2f,
+    /// Where in its pixel this frame's rays and vertices go through, pixels from its middle.
+    pub jitter: Vec2f,
 }
 
 #[derive(ShaderType)]
@@ -909,6 +954,14 @@ pub(crate) struct PostBlock {
     pub streak: Vec4f,
     /// 1 when the mark is drawn as the sky draws its discs, 0 otherwise.
     pub mark_as_sky: f32,
+}
+
+#[derive(ShaderType)]
+pub(crate) struct SettleBlock {
+    /// Columns of the matrix taking this frame's eye coordinates to the last frame's.
+    pub motion: [Vec4f; 4],
+    /// Each frame's share, whether the last image is there, the motion held still, nothing.
+    pub settings: Vec4f,
 }
 
 #[derive(ShaderType)]

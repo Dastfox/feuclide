@@ -32,11 +32,13 @@ impl Screenshots {
 /// An unattended capture read from the environment: `FK_CAPTURE` names the PNG to write,
 /// `FK_CAPTURE_AFTER` how many seconds to run first (3 by default; while time is paused, each
 /// frame counts a sixtieth of a second). The app exits once the file is written, so a script
-/// can render a scene and look at it.
+/// can render a scene and look at it. `FK_CAPTURE_FRAMES=n` saves `n` frames in a row instead,
+/// `<name>-000.png` on, to see how the image holds from one frame to the next.
 #[derive(Resource, Clone, Debug)]
 pub(crate) struct CaptureOnce {
     path: PathBuf,
     after: Real,
+    frames: u32,
 }
 
 impl CaptureOnce {
@@ -46,7 +48,25 @@ impl CaptureOnce {
             .ok()
             .and_then(|text| text.parse().ok())
             .unwrap_or(3.0);
-        Some(Self { path, after })
+        let frames = std::env::var("FK_CAPTURE_FRAMES")
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(1u32)
+            .max(1);
+        Some(Self {
+            path,
+            after,
+            frames,
+        })
+    }
+
+    /// Where the `k`th frame goes.
+    fn path(&self, k: u32) -> PathBuf {
+        if self.frames == 1 {
+            return self.path.clone();
+        }
+        let stem = self.path.file_stem().unwrap_or_default().to_string_lossy();
+        self.path.with_file_name(format!("{stem}-{k:03}.png"))
     }
 }
 
@@ -62,6 +82,7 @@ pub(crate) fn capture_once(
     mut screenshots: ResMut<Screenshots>,
     mut exit: ResMut<AppExit>,
     mut ran: Local<Real>,
+    mut saved: Local<u32>,
 ) {
     let Some(capture) = capture else { return };
     *ran += if time.is_paused() {
@@ -72,9 +93,12 @@ pub(crate) fn capture_once(
     if *ran < capture.after {
         return;
     }
-    screenshots.request(capture.path.clone());
-    exit.request();
-    commands.remove_resource::<CaptureOnce>();
+    screenshots.request(capture.path(*saved));
+    *saved += 1;
+    if *saved >= capture.frames {
+        exit.request();
+        commands.remove_resource::<CaptureOnce>();
+    }
 }
 
 /// Copies `texture`, the frame just drawn, into each of `paths`. Blocks until the GPU is done.

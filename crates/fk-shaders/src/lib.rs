@@ -100,6 +100,9 @@ pub enum Shader {
     /// The inked look laid over the opaque image before the mosh, a fullscreen pass. Entry
     /// points `vertex` and `fragment`.
     Ink,
+    /// The image settled over frames, after the opaque pass and before the ink, a fullscreen pass.
+    /// Entry points `vertex` and `fragment`.
+    Settle,
     /// The sky behind everything, a fullscreen pass. Entry points `vertex` and `fragment`.
     Sky,
     /// The datamosh rebuilding the image from a held frame, a fullscreen pass. Entry points
@@ -120,6 +123,7 @@ impl Shader {
         Self::Raster,
         Self::Post,
         Self::Ink,
+        Self::Settle,
         Self::Sky,
         Self::Mosh,
         Self::RayMarch,
@@ -129,7 +133,7 @@ impl Shader {
     /// The shader defs a skeleton reacts to; [`compose_with`] can turn each on.
     pub fn defs(self) -> &'static [&'static str] {
         match self {
-            Self::Post | Self::Ink | Self::Mosh => &["MULTISAMPLED"],
+            Self::Post | Self::Ink | Self::Settle | Self::Mosh => &["MULTISAMPLED"],
             Self::RayMarch => &["SAMPLED_METRIC", "SDF_KEPT", "SDF_MOSHED"],
             Self::Raster | Self::Sky | Self::SdfProbe => &[],
         }
@@ -139,8 +143,17 @@ impl Shader {
     pub fn entry_points(self) -> &'static [&'static str] {
         match self {
             Self::Raster => &["vertex", "fragment", "shadow_vertex", "window_fragment"],
-            Self::Post | Self::Ink | Self::Sky | Self::Mosh => &["vertex", "fragment"],
-            Self::RayMarch => &["vertex", "fragment", "fragment_half", "composite"],
+            Self::Post | Self::Ink | Self::Settle | Self::Sky | Self::Mosh => {
+                &["vertex", "fragment"]
+            }
+            Self::RayMarch => &[
+                "vertex",
+                "fragment",
+                "fragment_half",
+                "composite",
+                "fragment_carry",
+                "vertex_tiles",
+            ],
             Self::SdfProbe => &["probe"],
         }
     }
@@ -150,6 +163,7 @@ impl Shader {
             Self::Raster => ("fk/raster.wgsl", include_str!("wgsl/raster.wgsl")),
             Self::Post => ("fk/post.wgsl", include_str!("wgsl/post.wgsl")),
             Self::Ink => ("fk/ink.wgsl", include_str!("wgsl/ink.wgsl")),
+            Self::Settle => ("fk/settle.wgsl", include_str!("wgsl/settle.wgsl")),
             Self::Sky => ("fk/sky_pass.wgsl", include_str!("wgsl/sky_pass.wgsl")),
             Self::Mosh => ("fk/mosh.wgsl", include_str!("wgsl/mosh.wgsl")),
             Self::RayMarch => ("fk/ray_march.wgsl", include_str!("wgsl/ray_march.wgsl")),

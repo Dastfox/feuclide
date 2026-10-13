@@ -10,6 +10,7 @@ use fk_math::Real;
 
 use crate::input::{CursorGrab, RawInput};
 use crate::profile::FrameProfile;
+use crate::progress::Progress;
 use crate::schedule::{FixedUpdate, PostUpdate, PreUpdate, Render, Startup, Update};
 use crate::time::Time;
 use crate::window::{AppExit, Handover, WindowConfig, WindowMode};
@@ -61,7 +62,8 @@ pub struct App {
 
 impl App {
     /// An app with empty schedules and the [`Time`], [`RawInput`], [`CursorGrab`], [`AppExit`],
-    /// [`Handover`], [`WindowMode`] and [`FrameProfile`] resources.
+    /// [`Handover`], [`WindowMode`], [`FrameProfile`] and [`Progress`] resources (the
+    /// handover's, built for one).
     pub fn new() -> Self {
         let mut world = World::new();
         let mut schedules = Schedules::new();
@@ -79,6 +81,7 @@ impl App {
         world.init_resource::<Handover>();
         world.init_resource::<WindowMode>();
         world.init_resource::<FrameProfile>();
+        world.insert_resource(Progress::building());
         Self {
             world,
             window: WindowConfig::default(),
@@ -116,6 +119,12 @@ impl App {
     /// The geometry the app is built for, if one was set.
     pub fn geometry(&self) -> Option<ActiveGeometry> {
         self.world.get_resource::<ActiveGeometry>().copied()
+    }
+
+    /// Reports that building the app has reached `step` ([`Progress`]).
+    pub fn step(&mut self, step: impl Into<String>) -> &mut Self {
+        self.world.resource::<Progress>().step(step);
+        self
     }
 
     /// Adds a plugin.
@@ -202,8 +211,12 @@ impl App {
     /// Starts the app without its window and runs [`Render`] once, for a renderer to get
     /// ready: what a [`Handover`] does on its own thread.
     pub(crate) fn prepare(&mut self) {
+        let progress = self.world.resource::<Progress>().clone();
+        progress.step("starting");
         self.start();
+        progress.step("compiling the shaders");
         self.world.run_schedule(Render);
+        progress.step("ready");
     }
 
     pub(crate) fn start(&mut self) {

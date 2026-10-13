@@ -10,6 +10,9 @@ struct View {
     far: f32,
     // Size of the target in pixels.
     size: vec2<f32>,
+    // Where in its pixel this frame's rays and vertices go through, pixels from its middle: 0
+    // unless the image settles over frames (the settle pass).
+    jitter: vec2<f32>,
 }
 
 // Opaque to the engine: `time` is seconds since start, `values` mean whatever the game says.

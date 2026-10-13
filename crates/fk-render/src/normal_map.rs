@@ -7,6 +7,11 @@
 //! uv and a tangent along `u`, embedded with the normal (carried along the same geodesic from
 //! the origin), and the fragment stage bends the normal by the map in the frame made of the
 //! normal, the tangent and their cross product in the geometry (`geo_cross`).
+//!
+//! The maps are sampled through mipmaps made by averaging the normals of each level below, so a
+//! far surface takes their mean and does not shimmer; past [`NormalMaps::fade`] the map flattens
+//! to the surface's own normal altogether. [`NormalMaps::set_enabled`] flattens them all at once,
+//! to compare.
 
 use bevy_ecs::resource::Resource;
 use fk_math::Real;
@@ -30,6 +35,10 @@ pub struct NormalMaps {
     size: u32,
     /// The flat map first, then each added.
     layers: Vec<Vec<[u8; 4]>>,
+    /// Where the maps start flattening and where they are flat, geodesic distance from the eye.
+    fade: [Real; 2],
+    /// Whether the maps bend the light at all.
+    enabled: bool,
 }
 
 impl Default for NormalMaps {
@@ -45,7 +54,31 @@ impl NormalMaps {
         Self {
             size,
             layers: vec![vec![FLAT; (size * size) as usize]],
+            fade: [Real::INFINITY; 2],
+            enabled: true,
         }
+    }
+
+    /// Lays the maps on (the default), or flattens every one to its surface's own normal: the
+    /// meshes stay as they are, only the shader stops bending the light.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
+    /// Whether the maps bend the light ([`set_enabled`](Self::set_enabled)).
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Flattens every map with distance from the eye: whole nearer than `from`, flat from `to`
+    /// on, smoothly between. Never, by default.
+    pub fn set_fade(&mut self, from: Real, to: Real) {
+        self.fade = [from.max(0.0), to.max(from.max(0.0))];
+    }
+
+    /// Where the maps start flattening and where they are flat ([`set_fade`](Self::set_fade)).
+    pub fn fade(&self) -> [Real; 2] {
+        self.fade
     }
 
     /// How many texels across each map is.
@@ -95,6 +128,56 @@ impl NormalMaps {
     pub(crate) fn layers(&self) -> &[Vec<[u8; 4]>] {
         &self.layers
     }
+
+    /// How many mip levels each layer has, down to one texel.
+    pub(crate) fn mip_levels(&self) -> u32 {
+        32 - self.size.leading_zeros()
+    }
+
+    /// Every layer with its mipmaps, layer by layer and each from its largest level down, as
+    /// the texture is uploaded.
+    pub(crate) fn texels_with_mips(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for layer in &self.layers {
+            let (mut level, mut size) = (layer.clone(), self.size);
+            out.extend(level.iter().flatten());
+            for _ in 1..self.mip_levels() {
+                (level, size) = (half(&level, size), (size / 2).max(1));
+                out.extend(level.iter().flatten());
+            }
+        }
+        out
+    }
+}
+
+/// The level below `texels` (`size` across): each texel the mean normal of the four over it.
+fn half(texels: &[[u8; 4]], size: u32) -> Vec<[u8; 4]> {
+    let next = (size / 2).max(1);
+    let decode = |t: [u8; 4]| {
+        fk_math::nalgebra::Vector3::new(t[0], t[1], t[2]).map(|x| Real::from(x) / 127.5 - 1.0)
+    };
+    let mut out = Vec::with_capacity((next * next) as usize);
+    for j in 0..next {
+        for i in 0..next {
+            let mut sum = fk_math::nalgebra::Vector3::zeros();
+            for (di, dj) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                let (x, y) = ((2 * i + di).min(size - 1), (2 * j + dj).min(size - 1));
+                sum += decode(texels[(y * size + x) as usize]);
+            }
+            let n = if sum.norm() > 1e-9 {
+                sum.normalize()
+            } else {
+                fk_math::nalgebra::Vector3::z()
+            };
+            out.push([byte(n.x), byte(n.y), byte(n.z), 255]);
+        }
+    }
+    out
+}
+
+/// A unit coordinate as a texel's byte.
+fn byte(x: Real) -> u8 {
+    ((x * 0.5 + 0.5) * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
 /// The flat normal, straight out of the surface.
@@ -118,7 +201,6 @@ pub fn heights_to_normals(
                 / (2.0 * h);
             let normal =
                 fk_math::nalgebra::Vector3::new(-strength * du, -strength * dv, 1.0).normalize();
-            let byte = |x: Real| ((x * 0.5 + 0.5) * 255.0).round().clamp(0.0, 255.0) as u8;
             texels.push([byte(normal.x), byte(normal.y), byte(normal.z), 255]);
         }
     }
@@ -127,6 +209,8 @@ pub fn heights_to_normals(
 
 #[cfg(test)]
 mod tests {
+    use std::f64::consts::TAU;
+
     use super::*;
 
     #[test]
@@ -152,5 +236,18 @@ mod tests {
         assert_eq!(layers.len(), 2);
         assert!(layers[0].iter().all(|t| *t == FLAT));
         assert_eq!(layers[0].len(), 16);
+    }
+
+    #[test]
+    fn mipmaps_go_down_to_a_texel_and_average_out_to_flat() {
+        let mut maps = NormalMaps::new(8);
+        maps.add_heights(0.05, |u, _| (u * TAU * 4.0).sin());
+        assert_eq!(maps.mip_levels(), 4);
+        let texels = maps.texels_with_mips();
+        let per_layer = (64 + 16 + 4 + 1) * 4;
+        assert_eq!(texels.len(), 2 * per_layer);
+        // The ridges' last level is their mean: flat.
+        let last = &texels[2 * per_layer - 4..];
+        assert_eq!(last, &FLAT);
     }
 }

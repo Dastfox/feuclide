@@ -12,7 +12,7 @@ use fk_scene::ViewRelative;
 use wgpu::util::DeviceExt;
 
 use crate::deform::{CastsNoShadow, Deform, Deforms};
-use crate::elsewhere::ShowsElsewhere;
+use crate::elsewhere::{SeenBy, ShowsElsewhere};
 use crate::gpu::matrix_columns;
 use crate::mesh::{MeshInstances, Meshes, Vertex};
 use crate::normal_map::NormalMaps;
@@ -49,6 +49,8 @@ struct Candidate<G: Geometry> {
     layer: bool,
     /// A window onto the other eye's view.
     window: bool,
+    /// Which eye draws it, if only one does.
+    seen_by: Option<SeenBy>,
 }
 
 /// Instances of one mesh drawn through one slot's pipelines.
@@ -70,6 +72,10 @@ struct GpuNormalMaps {
     bind_group: wgpu::BindGroup,
     /// How many maps it holds, besides the flat one, and how big they are.
     uploaded: (usize, u32),
+    /// Where the maps flatten with distance (x from, y to) and whether they are on at all (z),
+    /// as the shader reads it.
+    fade: wgpu::Buffer,
+    faded: [f32; 3],
 }
 
 impl GpuNormalMaps {
@@ -95,29 +101,64 @@ impl GpuNormalMaps {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             });
-        let bind_group = Self::upload(gpu, &layout, &NormalMaps::new(1));
+        let faded = [f32::MAX, f32::MAX, 1.0];
+        let fade = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("fk normal maps' fade"),
+                contents: bytemuck::cast_slice(&[faded[0], faded[1], faded[2], 0.0]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+        let bind_group = Self::upload(gpu, &layout, &NormalMaps::new(1), &fade);
         Self {
             layout,
             bind_group,
             uploaded: (0, 1),
+            fade,
+            faded,
         }
     }
 
-    /// Uploads `maps` again if any were added since.
+    /// Uploads `maps` again if any were added since, and their fade if it changed.
     fn update(&mut self, gpu: &Gpu, maps: &NormalMaps) {
         let now = (maps.len(), maps.size());
         if now != self.uploaded {
-            self.bind_group = Self::upload(gpu, &self.layout, maps);
+            self.bind_group = Self::upload(gpu, &self.layout, maps, &self.fade);
             self.uploaded = now;
+        }
+        let [from, to] = maps.fade().map(|d| d.min(f32::MAX as f64) as f32);
+        let faded = [from, to, if maps.enabled() { 1.0 } else { 0.0 }];
+        if faded != self.faded {
+            gpu.queue.write_buffer(
+                &self.fade,
+                0,
+                bytemuck::cast_slice(&[faded[0], faded[1], faded[2], 0.0]),
+            );
+            self.faded = faded;
         }
     }
 
-    fn upload(gpu: &Gpu, layout: &wgpu::BindGroupLayout, maps: &NormalMaps) -> wgpu::BindGroup {
+    fn upload(
+        gpu: &Gpu,
+        layout: &wgpu::BindGroupLayout,
+        maps: &NormalMaps,
+        fade: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
         let layers = maps.layers();
         let size = maps.size();
-        let texels: Vec<u8> = layers.iter().flatten().flatten().copied().collect();
+        let texels = maps.texels_with_mips();
         let texture = gpu.device.create_texture_with_data(
             &gpu.queue,
             &wgpu::TextureDescriptor {
@@ -127,7 +168,7 @@ impl GpuNormalMaps {
                     height: size,
                     depth_or_array_layers: layers.len() as u32,
                 },
-                mip_level_count: 1,
+                mip_level_count: maps.mip_levels(),
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8Unorm,
@@ -147,6 +188,8 @@ impl GpuNormalMaps {
             address_mode_v: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            anisotropy_clamp: 4,
             ..Default::default()
         });
         gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -160,6 +203,10 @@ impl GpuNormalMaps {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: fade.as_entire_binding(),
                 },
             ],
         })
@@ -185,6 +232,7 @@ type Drawables<G> = (
     Has<OnLayer>,
     Has<ShowsElsewhere>,
     Has<Unrepeated>,
+    Option<&'static SeenBy>,
 );
 
 /// Draws every [`MeshInstances`] with classic rasterization and the geometry's projection.
@@ -567,7 +615,8 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
             .unwrap_or_default();
         let query = self.query.get_or_insert_with(|| world.query_filtered());
         self.candidates.clear();
-        for (relative, drawable, deform, casts_none, layer, window, unrepeated) in query.iter(world)
+        for (relative, drawable, deform, casts_none, layer, window, unrepeated, seen_by) in
+            query.iter(world)
         {
             let relative = view.relative(&relative.0);
             let slot = deform.map_or(0, |deform| deform.0.0 + 1);
@@ -592,6 +641,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                         casts: !casts_none && !window,
                         layer,
                         window,
+                        seen_by: seen_by.copied(),
                     });
                 }
             }
@@ -609,6 +659,11 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
             // No window onto the other eye's view in its own image.
             if candidate.window && view.elsewhere.is_some() {
                 continue;
+            }
+            // Drawn by one eye only.
+            match (candidate.seen_by, view.elsewhere.is_some()) {
+                (Some(SeenBy::Eye), true) | (Some(SeenBy::Elsewhere), false) => continue,
+                _ => {}
             }
             let Some(mesh) = self.meshes.get(candidate.mesh as usize) else {
                 continue;
@@ -967,9 +1022,10 @@ mod tests {
             sun: Vector3::new(1.0, 0.0, 0.4),
             ..Lighting::default()
         };
-        let wall = |mapped: bool| {
+        let wall = |mapped: bool, enabled: bool| {
             let mut world = World::new();
             let mut maps = NormalMaps::new(64);
+            maps.set_enabled(enabled);
             let ridges = maps.add_heights(0.15, |u, _| (u * std::f64::consts::TAU * 3.0).sin());
             let mut mesh = MeshBuilder::new();
             let corners = [(-3.0, -3.0), (3.0, -3.0), (3.0, 3.0), (-3.0, 3.0)];
@@ -1001,13 +1057,14 @@ mod tests {
                 .collect();
             row.iter().max().unwrap() - row.iter().min().unwrap()
         };
-        let (flat, ridged) = (wall(false), wall(true));
+        let (flat, ridged, off) = (wall(false, true), wall(true, true), wall(true, false));
         assert!(
             spread(&flat) <= 2,
             "the flat wall is even: {}",
             spread(&flat)
         );
         assert!(spread(&ridged) > 40, "the ridges show: {}", spread(&ridged));
+        assert!(spread(&off) <= 2, "maps off, it is flat: {}", spread(&off));
     }
 
     /// Headless: a point light a metre before a wall the sun is behind lights it, most where it

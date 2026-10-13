@@ -18,6 +18,15 @@ struct March {
     // x: how much of the painted light and of the iteration-count darkening the surface takes,
     // 1 all of it, 0 none (drawn in its own colour); y: how much of the fog it takes.
     paint: vec4<f32>,
+    // A scene marched one tile in each square of them each frame, in turn
+    // (`fk_render::RayMarched::interleave`): x how many tiles across a square is (1 for every
+    // tile each frame); y which of the square is marched this frame (its x mod x, and x times
+    // its y mod x); z 1 when its last frame's image is there to carry the others from; w 1
+    // when the image settles over frames (`fk_render::Settle`): the pixels carried are marked
+    // for it, `CARRIED` added to their alpha, so that it takes in only what was marched.
+    interleave: vec4<f32>,
+    // This frame's eye coordinates to the last frame's, the others carried by it.
+    carry: mat4x4<f32>,
     // The quotient the scene is in (`fk_render::QuotientView`), in the eye's frame.
     fold: Fold,
     // The caller's.

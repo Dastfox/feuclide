@@ -51,6 +51,8 @@ pub struct MeshBuilder {
     positions: Vec<Vector3<Real>>,
     normals: Vec<Vector3<Real>>,
     uvs: Vec<[Real; 2]>,
+    /// Each vertex's own map, laid over the mesh's.
+    maps: Vec<Option<NormalMap>>,
     indices: Vec<u32>,
     normal_map: Option<NormalMap>,
 }
@@ -73,15 +75,31 @@ impl MeshBuilder {
         normal: Vector3<Real>,
         uv: [Real; 2],
     ) -> u32 {
+        self.vertex_mapped(position, normal, uv, None)
+    }
+
+    /// Adds a vertex with texture coordinates and a normal map of its own, laid over the
+    /// mesh's ([`normal_map`](Self::normal_map)); the normal is normalized. Returns its index.
+    ///
+    /// A triangle's vertices should share their map: between two, the shader samples layers
+    /// in between.
+    pub fn vertex_mapped(
+        &mut self,
+        position: Vector3<Real>,
+        normal: Vector3<Real>,
+        uv: [Real; 2],
+        map: Option<NormalMap>,
+    ) -> u32 {
         let index = u32::try_from(self.positions.len()).expect("mesh has too many vertices");
         self.positions.push(position);
         self.normals.push(normal.normalize());
         self.uvs.push(uv);
+        self.maps.push(map);
         index
     }
 
-    /// Lays `map` on the mesh by its texture coordinates. Its tangents are made from them when
-    /// it is built.
+    /// Lays `map` on the mesh by its texture coordinates, on every vertex without a map of its
+    /// own. Its tangents are made from them when it is built.
     pub fn normal_map(&mut self, map: NormalMap) -> &mut Self {
         self.normal_map = Some(map);
         self
@@ -122,6 +140,11 @@ impl MeshBuilder {
     /// The texture coordinates so far.
     pub fn uvs(&self) -> &[[Real; 2]] {
         &self.uvs
+    }
+
+    /// Each vertex's normal map so far: its own, or else the mesh's.
+    pub fn maps(&self) -> impl Iterator<Item = Option<NormalMap>> + '_ {
+        self.maps.iter().map(|map| map.or(self.normal_map))
     }
 
     /// Each vertex's unit tangent along `u`, at right angles to its normal, and the handedness
@@ -195,8 +218,8 @@ impl MeshBuilder {
         );
         let origin = G::origin();
         let mut radius: Real = 0.0;
-        let tangents = self.normal_map.map(|_| self.tangents());
-        let layer = self.normal_map.map_or(0.0, |map| map.layer() as f32);
+        let maps: Vec<Option<NormalMap>> = self.maps().collect();
+        let tangents = maps.iter().any(Option::is_some).then(|| self.tangents());
         let vertices = self
             .positions
             .iter()
@@ -204,15 +227,17 @@ impl MeshBuilder {
             .zip(&self.uvs)
             .enumerate()
             .map(|(i, ((position, normal), uv))| {
+                let layer = maps[i].map_or(0.0, |map| map.layer() as f32);
                 let point = G::exp(&origin, &tangent::<G>(position));
                 let carry = |v: &Vector3<Real>| {
                     let v = G::parallel_transport(&origin, &point, &tangent::<G>(v));
                     Vec4f::from_real(&G::embed_tangent(&point, &v))
                 };
                 radius = radius.max(G::distance(&origin, &point));
-                let (along, sign) = tangents
-                    .as_ref()
-                    .map_or((None, 1.0), |tangents| (Some(tangents[i].0), tangents[i].1));
+                let (along, sign) = match (&tangents, maps[i]) {
+                    (Some(tangents), Some(_)) => (Some(tangents[i].0), tangents[i].1),
+                    _ => (None, 1.0),
+                };
                 Vertex {
                     position: Vec4f::from_real(&G::embed_point(&point)),
                     normal: carry(normal),
@@ -361,6 +386,27 @@ mod tests {
                 .iter()
                 .all(|v| v.uv.0[2] == 0.0 && v.tangent.0 == [0.0; 4])
         );
+    }
+
+    #[test]
+    fn a_vertex_keeps_its_own_map_over_the_meshes() {
+        let mut maps = NormalMapsForTest::new();
+        let (first, second) = (maps.add(), maps.add());
+        let mut mesh = square(false);
+        let own = mesh.vertex_mapped(Vector3::zeros(), Vector3::z(), [0.0; 2], Some(second));
+        let none = mesh.vertex(Vector3::x(), Vector3::z());
+        mesh.triangle(own, none, 0);
+        let plain = mesh.build::<fk_geometry_euclidean::E3>();
+        assert_eq!(plain.vertices[own as usize].uv.0[2], 2.0);
+        assert_eq!(plain.vertices[none as usize].uv.0[2], 0.0);
+        assert_eq!(plain.vertices[none as usize].tangent.0, [0.0; 4]);
+        mesh.normal_map(first);
+        let laid = mesh.build::<fk_geometry_euclidean::E3>();
+        assert_eq!(
+            laid.vertices[own as usize].uv.0[2], 2.0,
+            "its own map stays"
+        );
+        assert_eq!(laid.vertices[none as usize].uv.0[2], 1.0, "the mesh's map");
     }
 
     struct NormalMapsForTest(crate::NormalMaps);

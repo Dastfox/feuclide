@@ -23,8 +23,13 @@ use crate::{Gpu, RenderStats};
 pub const SDF_PARAMS: usize = 192;
 
 const HALF_COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// Pixels across the tiles of a scene marched one tile in each square of them
+/// ([`RayMarched::interleave`]): `INTERLEAVED` in `ray_march.wgsl`.
+const INTERLEAVED: u32 = 8;
 /// Where each block's rays start, and the steps it took to get there.
 const COARSE: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Float;
+/// Pixels to a group of the compute pass that lists the pixels traced at full resolution.
+const CLASSIFY_GROUP: u32 = 8;
 const HALF_DISTANCE: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 
 /// A signed distance field: a WGSL module that replaces the engine's `fk::sdf` (a ball of
@@ -360,6 +365,20 @@ pub struct RayMarched {
     /// much of the view in front of another one (the first such scene; any other is drawn as
     /// usual). The image is the same.
     pub ahead: bool,
+    /// Marched [`ahead`](Self::ahead) at full resolution, only one tile (8 pixels across) of
+    /// every square of `interleave` × `interleave` is marched each frame, in turn, the others
+    /// carried from its last frame's image where the eye's motion took them (by the distance it
+    /// had there: exact while the eye only turns): about `interleave`² times cheaper, what moves
+    /// in the field as many frames late, and a pixel coming into view from nowhere is marched.
+    /// 0 or 1, every pixel is marched every frame. With [`coarse`](Self::coarse) 8, the cones
+    /// of the tiles carried are not marched either. With the image settling over frames
+    /// ([`Settle`](crate::Settle)) each pixel comes out as the average over it all the same.
+    /// Ignored for any other scene.
+    pub interleave: u32,
+    /// While the eye moves more than about a pixel a frame, one tile in a square of this many
+    /// across instead of [`interleave`](Self::interleave): fewer carried, so sharper as it
+    /// turns, and dearer. 0, the same as `interleave`.
+    pub interleave_moving: u32,
 }
 
 impl RayMarched {
@@ -378,6 +397,8 @@ impl RayMarched {
             over: false,
             coarse: 0,
             ahead: false,
+            interleave: 1,
+            interleave_moving: 0,
         }
     }
 }
@@ -441,6 +462,8 @@ struct MarchBlock {
     settings: Vec4f,
     shading: Vec4f,
     paint: Vec4f,
+    interleave: Vec4f,
+    carry: [Vec4f; 4],
     fold: Fold,
     params: [Vec4f; SDF_PARAMS],
 }
@@ -489,6 +512,8 @@ impl MarchBlock {
             settings: Vec4f([1.0; 4]),
             shading: Vec4f([0.0, 0.0, 1.0, 0.0]),
             paint: Vec4f([1.0, 1.0, 0.0, 0.0]),
+            interleave: Vec4f([0.0; 4]),
+            carry: matrix_columns(&fk_math::nalgebra::Matrix4::identity()).map(Vec4f),
             fold: Fold::default(),
             params: params.map(Vec4f),
         }
@@ -508,6 +533,26 @@ struct Pipelines {
     composite_over: wgpu::RenderPipeline,
     /// The cones of [`RayMarched::coarse`], into the scene's coarse target.
     coarse: wgpu::RenderPipeline,
+    /// A scene marched one tile in each square of them ([`RayMarched::interleave`]): every
+    /// pixel carried from its last frame, then the tiles marched this frame drawn over them.
+    carry: wgpu::RenderPipeline,
+    tiles: wgpu::RenderPipeline,
+    /// At half resolution, the pixels whose own rays the composite needs: listed, the
+    /// dispatch over them written, and their rays traced at full resolution.
+    classify: wgpu::ComputePipeline,
+    finalize: wgpu::ComputePipeline,
+    refine: wgpu::ComputePipeline,
+}
+
+/// What lists and traces at full resolution the pixels a half-resolution scene's composite
+/// needs the rays of: how many, the dispatch over them, the list, and the groups binding them.
+struct Edges {
+    count: wgpu::Buffer,
+    args: wgpu::Buffer,
+    /// For `classify` and `finalize`.
+    listing: wgpu::BindGroup,
+    /// For `refine`.
+    tracing: wgpu::BindGroup,
 }
 
 /// Where the rays of each block of a scene start ([`RayMarched::coarse`]).
@@ -516,12 +561,14 @@ struct CoarseTargets {
     view: wgpu::TextureView,
 }
 
-/// The offscreen targets of one scene at half resolution.
+/// The offscreen targets of one scene at half resolution (or at full resolution, ahead).
 struct HalfTargets {
     size: [u32; 2],
     color: wgpu::TextureView,
     distance: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
+    /// At half resolution, the pixels traced at full resolution, `full` across.
+    edges: Option<(Edges, [u32; 2])>,
 }
 
 /// One scene drawn this frame.
@@ -538,6 +585,11 @@ struct Scene {
     /// Marched before the others this frame, into `half` at its resolution
     /// ([`RayMarched::ahead`]).
     ahead: bool,
+    /// Marched one tile in each square of them ([`RayMarched::interleave`]): its last frame's targets, the
+    /// others carried from them. `half` and these change places each frame.
+    last: Option<HalfTargets>,
+    /// Carried from `last` this frame, and how many tiles are marched over it.
+    carried: Option<u32>,
     /// Where its rays start and where they stop this frame: its cones and the scene ahead.
     starts: Option<wgpu::BindGroup>,
     /// Drawn into the layer render as well.
@@ -564,9 +616,16 @@ pub struct RayMarchPipeline<G: GpuGeometry> {
     march_layout: wgpu::BindGroupLayout,
     half_layout: wgpu::BindGroupLayout,
     coarse_layout: wgpu::BindGroupLayout,
+    listing_layout: wgpu::BindGroupLayout,
+    tracing_layout: wgpu::BindGroupLayout,
     full_layout: wgpu::PipelineLayout,
     composite_layout: wgpu::PipelineLayout,
     cone_layout: wgpu::PipelineLayout,
+    listing_pipeline_layout: wgpu::PipelineLayout,
+    tracing_pipeline_layout: wgpu::PipelineLayout,
+    /// What a scene marched at full resolution binds where the pixels traced at full
+    /// resolution would be.
+    no_refined: wgpu::TextureView,
     /// What a scene without cones binds where its coarse target would be, and one without a
     /// scene ahead where that scene's distances would be.
     no_coarse: wgpu::TextureView,
@@ -582,6 +641,10 @@ pub struct RayMarchPipeline<G: GpuGeometry> {
     scenes: Vec<Scene>,
     /// How many of `scenes` are drawn this frame.
     drawn: usize,
+    /// Frames prepared, for which tile of four an interleaved scene marches.
+    frame: u32,
+    /// The eye of the last frame, for what an interleaved scene carries.
+    last_eye: Option<G::Isometry>,
     _geometry: PhantomData<fn() -> G>,
 }
 
@@ -593,7 +656,7 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
             label: Some("fk march"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -604,7 +667,7 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
         });
         let texture = |binding| wgpu::BindGroupLayoutEntry {
             binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
+            visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: false },
                 view_dimension: wgpu::TextureViewDimension::D2,
@@ -614,14 +677,54 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
         };
         let half_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("fk march half"),
-            entries: &[texture(0), texture(1)],
+            entries: &[texture(0), texture(1), texture(8), texture(9)],
+        });
+        let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let written = |binding, format| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::StorageTexture {
+                access: wgpu::StorageTextureAccess::WriteOnly,
+                format,
+                view_dimension: wgpu::TextureViewDimension::D2,
+            },
+            count: None,
+        };
+        let listing_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("fk march edges"),
+            entries: &[
+                texture(0),
+                texture(1),
+                storage(4, false),
+                storage(5, false),
+                storage(10, false),
+            ],
+        });
+        let tracing_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("fk march edges"),
+            entries: &[
+                storage(4, false),
+                storage(11, true),
+                written(6, HALF_COLOR),
+                written(7, HALF_DISTANCE),
+            ],
         });
         let coarse_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("fk march coarse"),
-            entries: &[texture(2), texture(3)],
+            entries: &[texture(2), texture(3), texture(12), texture(13)],
         });
         let no_coarse = coarse_texture(device, [1, 1]);
         let no_distance = offscreen_texture(device, [1, 1], HALF_DISTANCE);
+        let no_refined = offscreen_texture(device, [1, 1], HALF_COLOR);
         let pipeline_layout = |groups: &[Option<&wgpu::BindGroupLayout>]| {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("fk march"),
@@ -639,12 +742,28 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
             composite_layout: pipeline_layout(&[
                 Some(setup.frame_layout),
                 Some(&march_layout),
+                Some(&coarse_layout),
                 Some(&half_layout),
             ]),
             cone_layout: pipeline_layout(&[Some(setup.frame_layout), Some(&march_layout)]),
+            listing_pipeline_layout: pipeline_layout(&[
+                Some(setup.frame_layout),
+                Some(&march_layout),
+                Some(&coarse_layout),
+                Some(&listing_layout),
+            ]),
+            tracing_pipeline_layout: pipeline_layout(&[
+                Some(setup.frame_layout),
+                Some(&march_layout),
+                Some(&coarse_layout),
+                Some(&tracing_layout),
+            ]),
             march_layout,
             half_layout,
             coarse_layout,
+            listing_layout,
+            tracing_layout,
+            no_refined,
             no_coarse,
             no_distance,
             color_format: setup.color_format,
@@ -655,6 +774,8 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
             query: None,
             scenes: Vec::new(),
             drawn: 0,
+            frame: 0,
+            last_eye: None,
             _geometry: PhantomData,
         }
     }
@@ -683,17 +804,18 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
                 label: Some(label),
                 source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
             });
-        let pipeline = |layout,
-                        entry,
-                        targets: &[Option<wgpu::ColorTargetState>],
-                        depth: Option<wgpu::CompareFunction>| {
+        let pipeline_from = |vertex: &str,
+                             layout,
+                             entry,
+                             targets: &[Option<wgpu::ColorTargetState>],
+                             depth: Option<wgpu::CompareFunction>| {
             self.device
                 .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some(label),
                     layout: Some(layout),
                     vertex: wgpu::VertexState {
                         module: &shader,
-                        entry_point: Some("vertex"),
+                        entry_point: Some(vertex),
                         compilation_options: Default::default(),
                         buffers: &[],
                     },
@@ -723,6 +845,23 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
                     cache: None,
                 })
         };
+        let pipeline = |layout,
+                        entry,
+                        targets: &[Option<wgpu::ColorTargetState>],
+                        depth: Option<wgpu::CompareFunction>| {
+            pipeline_from("vertex", layout, entry, targets, depth)
+        };
+        let compute = |layout, entry| {
+            self.device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(layout),
+                    module: &shader,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    cache: None,
+                })
+        };
         let opaque = [Some(self.color_format.into())];
         let (tested, over) = (
             Some(wgpu::CompareFunction::Greater),
@@ -745,6 +884,22 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
                 &[Some(COARSE.into())],
                 None,
             ),
+            carry: pipeline(
+                &self.full_layout,
+                "fragment_carry",
+                &[Some(HALF_COLOR.into()), Some(HALF_DISTANCE.into())],
+                None,
+            ),
+            tiles: pipeline_from(
+                "vertex_tiles",
+                &self.full_layout,
+                "fragment_half",
+                &[Some(HALF_COLOR.into()), Some(HALF_DISTANCE.into())],
+                None,
+            ),
+            classify: compute(&self.listing_pipeline_layout, "classify"),
+            finalize: compute(&self.listing_pipeline_layout, "finalize"),
+            refine: compute(&self.tracing_pipeline_layout, "refine"),
         }
     }
 
@@ -755,7 +910,9 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
         }
     }
 
-    fn half_targets(&self, size: [u32; 2]) -> HalfTargets {
+    /// The targets of a scene marched offscreen at `size`; at half resolution (`full` the
+    /// window's size), what lists and traces its edges at full resolution too.
+    fn half_targets(&self, size: [u32; 2], full: Option<[u32; 2]>) -> HalfTargets {
         let target = |format| {
             self.device
                 .create_texture(&wgpu::TextureDescriptor {
@@ -777,18 +934,96 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
         };
         let color = target(HALF_COLOR);
         let distance = target(HALF_DISTANCE);
+        fn view(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
+            wgpu::BindGroupEntry {
+                binding,
+                resource: wgpu::BindingResource::TextureView(view),
+            }
+        }
+        fn buffer(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
+            wgpu::BindGroupEntry {
+                binding,
+                resource: buffer.as_entire_binding(),
+            }
+        }
+        let mut refined = (self.no_refined.clone(), self.no_distance.clone());
+        let mut edges = None;
+        if let Some(full) = full {
+            let written = |format| {
+                self.device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("fk march edges"),
+                        size: wgpu::Extent3d {
+                            width: full[0],
+                            height: full[1],
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format,
+                        usage: wgpu::TextureUsages::STORAGE_BINDING
+                            | wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    })
+                    .create_view(&Default::default())
+            };
+            refined = (written(HALF_COLOR), written(HALF_DISTANCE));
+            let storage = |label, size: u64, usage| {
+                self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(label),
+                    size,
+                    usage: wgpu::BufferUsages::STORAGE | usage,
+                    mapped_at_creation: false,
+                })
+            };
+            let pixels = u64::from(full[0]) * u64::from(full[1]);
+            let list = storage(
+                "fk march edges",
+                4 * pixels.max(1),
+                wgpu::BufferUsages::empty(),
+            );
+            let count = storage("fk march edges", 4, wgpu::BufferUsages::COPY_DST);
+            let args = storage("fk march edges", 16, wgpu::BufferUsages::INDIRECT);
+            let listing = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("fk march edges"),
+                layout: &self.listing_layout,
+                entries: &[
+                    view(0, &color),
+                    view(1, &distance),
+                    buffer(4, &list),
+                    buffer(5, &count),
+                    buffer(10, &args),
+                ],
+            });
+            let tracing = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("fk march edges"),
+                layout: &self.tracing_layout,
+                entries: &[
+                    buffer(4, &list),
+                    buffer(11, &args),
+                    view(6, &refined.0),
+                    view(7, &refined.1),
+                ],
+            });
+            edges = Some((
+                Edges {
+                    count,
+                    args,
+                    listing,
+                    tracing,
+                },
+                full,
+            ));
+        }
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("fk march half"),
             layout: &self.half_layout,
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&color),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&distance),
-                },
+                view(0, &color),
+                view(1, &distance),
+                view(8, &refined.0),
+                view(9, &refined.1),
             ],
         });
         HalfTargets {
@@ -796,6 +1031,7 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
             color,
             distance,
             bind_group,
+            edges,
         }
     }
 
@@ -824,6 +1060,8 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
                 coarse: None,
                 coarsened: false,
                 ahead: false,
+                last: None,
+                carried: None,
                 starts: None,
                 layer: false,
                 over: false,
@@ -853,7 +1091,22 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
             .get_resource::<RayMarching>()
             .cloned()
             .unwrap_or_default();
+        // Whether the image settles over frames: what a scene marched one tile in a square of
+        // them carries is then marked for it.
+        let settles = world
+            .get_resource::<crate::PostSettings>()
+            .is_some_and(|post| post.settle.frames > 1.0);
         let half_size = view.size.map(|n| n.div_ceil(2).max(1));
+        // How the eye moved since the last frame, and which tile of four is marched.
+        let eye = view.view.eye.isometry;
+        let carry = self
+            .last_eye
+            .map(|last| G::isometry_matrix(&last.inverse().compose(&eye)));
+        self.last_eye = Some(eye);
+        self.frame = self.frame.wrapping_add(1);
+        // Whether the eye moved more than about a pixel since the last frame.
+        let turned =
+            carry.is_some_and(|m| (m - fk_math::nalgebra::Matrix4::identity()).norm() > 2e-3);
 
         let fold = world
             .get_resource::<QuotientView<G>>()
@@ -923,18 +1176,63 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
                     cones as f32,
                     if is_ahead { 0.0 } else { ahead_pixels },
                 ]),
+                interleave: Vec4f([0.0; 4]),
+                carry: [Vec4f([0.0; 4]); 4],
                 fold,
                 params: marched.params.map(Vec4f),
             };
+            // While the eye moves, more tiles are marched: fewer carried, sharper as it turns.
+            let tiles_across = if turned && marched.interleave_moving > 0 {
+                marched.interleave_moving
+            } else {
+                marched.interleave
+            };
+            let interleaved = is_ahead && !half && tiles_across > 1;
+            // Which tile of the square is marched: in a turn that leaps across it.
+            let tiles = tiles_across.max(1) * tiles_across.max(1);
+            let leap = (1..tiles)
+                .rev()
+                .find(|k| gcd(*k, tiles) == 1 && *k * 2 < tiles + 2);
+            let marched_tile = (self.frame.wrapping_mul(leap.unwrap_or(1))) % tiles;
+            if interleaved {
+                // Last frame's targets become what this frame carries from.
+                let scene = self.scene(index);
+                std::mem::swap(&mut scene.half, &mut scene.last);
+            } else if let Some(scene) = self.scenes.get_mut(index) {
+                scene.last = None;
+            }
+            let carried = interleaved
+                && carry.is_some()
+                && self.scenes[index]
+                    .last
+                    .as_ref()
+                    .is_some_and(|last| last.size == target_size);
+            let block = MarchBlock {
+                interleave: Vec4f([
+                    if interleaved {
+                        tiles_across as f32
+                    } else {
+                        1.0
+                    },
+                    marched_tile as f32,
+                    if carried { 1.0 } else { 0.0 },
+                    if settles { 1.0 } else { 0.0 },
+                ]),
+                carry: matrix_columns(&carry.unwrap_or_else(fk_math::nalgebra::Matrix4::identity))
+                    .map(Vec4f),
+                ..block
+            };
             let offscreen = half || is_ahead;
+            // At half resolution its edges are traced at full resolution.
+            let full = half.then_some(view.size);
             let needs_targets = offscreen
                 && self.scenes.get(index).is_none_or(|scene| {
-                    scene
-                        .half
-                        .as_ref()
-                        .is_none_or(|targets| targets.size != target_size)
+                    scene.half.as_ref().is_none_or(|targets| {
+                        targets.size != target_size
+                            || targets.edges.as_ref().map(|(_, size)| *size) != full
+                    })
                 });
-            let targets = needs_targets.then(|| self.half_targets(target_size));
+            let targets = needs_targets.then(|| self.half_targets(target_size, full));
             let needs_coarse = cones > 0
                 && self.scenes.get(index).is_none_or(|scene| {
                     scene
@@ -943,7 +1241,15 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
                         .is_none_or(|targets| targets.size != coarse_size)
                 });
             let coarse = needs_coarse.then(|| self.coarse_targets(coarse_size));
+            let tiles_marched = carried.then(|| {
+                let n = tiles_across.max(1);
+                let tiles = view.size.map(|s| s.div_ceil(INTERLEAVED));
+                let first = [marched_tile % n, marched_tile / n];
+                let count = |axis: usize| tiles[axis].saturating_sub(first[axis]).div_ceil(n);
+                count(0) * count(1)
+            });
             let scene = self.scene(index);
+            scene.carried = tiles_marched;
             scene.sdf = marched.sdf.0;
             scene.layer = layer;
             scene.halved = offscreen;
@@ -974,7 +1280,12 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
                 Some(view) if !scene.ahead => view,
                 _ => &self.no_distance,
             };
-            let starts = coarse_bind_group(&self.device, &self.coarse_layout, coarse, distance);
+            let last = match &scene.last {
+                Some(last) => (&last.color, &last.distance),
+                None => (&self.no_refined, &self.no_distance),
+            };
+            let starts =
+                coarse_bind_group(&self.device, &self.coarse_layout, coarse, distance, last);
             self.scenes[index].starts = Some(starts);
         }
     }
@@ -1037,11 +1348,45 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
                 color_attachments: &[attachment(&targets.color), attachment(&targets.distance)],
                 ..Default::default()
             });
-            pass.set_pipeline(&pipelines.half);
             pass.set_bind_group(0, bindings.frame, &[]);
             pass.set_bind_group(1, &scene.bind_group, &[]);
             pass.set_bind_group(2, self.starts(scene), &[]);
-            pass.draw(0..3, 0..1);
+            if let Some(tiles) = scene.carried {
+                // Every pixel carried, the tiles of this frame marched over them.
+                pass.set_pipeline(&pipelines.carry);
+                pass.draw(0..3, 0..1);
+                pass.set_pipeline(&pipelines.tiles);
+                pass.draw(0..6, 0..tiles);
+            } else {
+                pass.set_pipeline(&pipelines.half);
+                pass.draw(0..3, 0..1);
+            }
+            drop(pass);
+            // The pixels between which the half resolution cannot tell: listed, and their own
+            // rays traced together at full resolution.
+            let Some((edges, full)) = &targets.edges else {
+                continue;
+            };
+            encoder.clear_buffer(&edges.count, 0, None);
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("fk march edges"),
+                timestamp_writes: None,
+            });
+            pass.set_bind_group(0, bindings.frame, &[]);
+            pass.set_bind_group(1, &scene.bind_group, &[]);
+            pass.set_bind_group(2, self.starts(scene), &[]);
+            pass.set_bind_group(3, &edges.listing, &[]);
+            pass.set_pipeline(&pipelines.classify);
+            pass.dispatch_workgroups(
+                full[0].div_ceil(CLASSIFY_GROUP),
+                full[1].div_ceil(CLASSIFY_GROUP),
+                1,
+            );
+            pass.set_pipeline(&pipelines.finalize);
+            pass.dispatch_workgroups(1, 1, 1);
+            pass.set_bind_group(3, &edges.tracing, &[]);
+            pass.set_pipeline(&pipelines.refine);
+            pass.dispatch_workgroups_indirect(&edges.args, 0);
         }
     }
 
@@ -1088,7 +1433,9 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
                     } else {
                         &pipelines.composite
                     });
-                    pass.set_bind_group(2, &targets.bind_group, &[]);
+                    // Edges are traced again at full resolution, from the cones.
+                    pass.set_bind_group(2, self.starts(scene), &[]);
+                    pass.set_bind_group(3, &targets.bind_group, &[]);
                 }
                 (_, _, true) => {
                     pass.set_pipeline(&pipelines.full_over);
@@ -1104,6 +1451,11 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
             pass.draw(0..3, 0..1);
         }
     }
+}
+
+/// The greatest common divisor of `a` and `b`.
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 
 /// A target of where each block's rays start, `size` blocks across.
@@ -1151,12 +1503,14 @@ fn offscreen_texture(
 }
 
 /// Where a scene's rays start (`coarse`, its cones) and stop (`ahead`, the distances of the
-/// scene ahead of it).
+/// scene ahead of it), and, marched one tile in each square of them, its last frame's image (`last`: colour
+/// and distance) the others are carried from.
 fn coarse_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     coarse: &wgpu::TextureView,
     ahead: &wgpu::TextureView,
+    last: (&wgpu::TextureView, &wgpu::TextureView),
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("fk march coarse"),
@@ -1169,6 +1523,14 @@ fn coarse_bind_group(
             wgpu::BindGroupEntry {
                 binding: 3,
                 resource: wgpu::BindingResource::TextureView(ahead),
+            },
+            wgpu::BindGroupEntry {
+                binding: 12,
+                resource: wgpu::BindingResource::TextureView(last.0),
+            },
+            wgpu::BindGroupEntry {
+                binding: 13,
+                resource: wgpu::BindingResource::TextureView(last.1),
             },
         ],
     })
@@ -1270,6 +1632,18 @@ fn sdf_color(q: vec3<f32>) -> vec3<f32> {
         occlusion: Real,
         scenes: &[(Real, RayMarched)],
     ) -> (u32, u32, Vec<u8>) {
+        draw_frames(gpu, half, occlusion, scenes, 1)
+    }
+
+    /// The boxes `scenes` drawn as `draw_scenes` does, `frames` frames running, the eye still:
+    /// the last frame's image.
+    fn draw_frames(
+        gpu: &Gpu,
+        half: bool,
+        occlusion: Real,
+        scenes: &[(Real, RayMarched)],
+        frames: usize,
+    ) -> (u32, u32, Vec<u8>) {
         let (width, height) = (64, 48);
         let device = &gpu.device;
         let frame_layout = frame_layout(device);
@@ -1335,9 +1709,6 @@ fn sdf_color(q: vec3<f32>) -> vec3<f32> {
         };
         let blocks = frame_blocks(&world, Some(&active), &Lighting::default(), None, 1, size);
         frame.write(&gpu.queue, &blocks);
-        pipeline.prepare(gpu, &mut world, &view);
-        pipeline.queue(gpu, &view);
-        assert_eq!(GeometryRenderer::<E3>::stats(&pipeline).drawn, scenes.len());
 
         let texture = |format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
@@ -1363,8 +1734,15 @@ fn sdf_color(q: vec3<f32>) -> vec3<f32> {
             elsewhere: None,
         };
         let mut encoder = device.create_command_encoder(&Default::default());
-        pipeline.encode(&mut encoder, &bindings);
-        {
+        for frame in 0..frames {
+            if frame > 0 {
+                gpu.queue.submit([encoder.finish()]);
+                encoder = device.create_command_encoder(&Default::default());
+            }
+            pipeline.prepare(gpu, &mut world, &view);
+            pipeline.queue(gpu, &view);
+            assert_eq!(GeometryRenderer::<E3>::stats(&pipeline).drawn, scenes.len());
+            pipeline.encode(&mut encoder, &bindings);
             let color_view = color.create_view(&Default::default());
             let depth_view = depth.create_view(&Default::default());
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1493,6 +1871,43 @@ fn sdf_color(q: vec3<f32>) -> vec3<f32> {
         }
     }
 
+    /// A scene marched one tile in nine, the eye still, draws what it does marched whole:
+    /// the first frame whole, the other tiles carried just where they were.
+    #[test]
+    fn an_interleaved_scene_settles_as_marched() {
+        let Some(gpu) = Gpu::headless() else {
+            eprintln!("no adapter, skipped");
+            return;
+        };
+        let mut front = params();
+        front[0] = [0.6, 0.6, 0.6, 0.0];
+        front[1] = [0.2, 0.3, 0.9, 0.0];
+        let scenes = |interleave: bool| {
+            [(
+                -4.0,
+                RayMarched {
+                    params: front,
+                    ahead: true,
+                    interleave: if interleave { 3 } else { 1 },
+                    ..RayMarched::new(SdfHandle(0))
+                },
+            )]
+        };
+        let marched = draw_frames(&gpu, false, 0.0, &scenes(false), 1);
+        for frames in [1, 2, 5] {
+            let interleaved = draw_frames(&gpu, false, 0.0, &scenes(true), frames);
+            for y in 0..marched.1 {
+                for x in 0..marched.0 {
+                    let (a, b) = (pixel(&marched, x, y), pixel(&interleaved, x, y));
+                    assert!(
+                        (0..4).all(|c| a[c].abs_diff(b[c]) <= 2),
+                        "{frames} frames, ({x}, {y}): {a:?} {b:?}"
+                    );
+                }
+            }
+        }
+    }
+
     /// A box marched ahead of a bigger one behind it hides it as it did drawn in turn: the
     /// one behind stops its rays where the one ahead is, and the image is the same.
     #[test]
@@ -1545,6 +1960,49 @@ fn sdf_color(q: vec3<f32>) -> vec3<f32> {
                     }
                 }
             }
+        }
+    }
+
+    /// At half resolution the image is the full resolution's: between pixels marched that
+    /// agree, what lies between them; at edges, each pixel's own ray. Only on an edge may a
+    /// pixel differ, as in [`cones_change_nothing_drawn`].
+    #[test]
+    fn half_resolution_draws_as_full() {
+        let Some(gpu) = Gpu::headless() else {
+            eprintln!("no adapter, skipped");
+            return;
+        };
+        let edge = |image: &(u32, u32, Vec<u8>), x: u32, y: u32| {
+            let here = pixel(image, x, y);
+            (-2i64..=2).any(|dy| {
+                (-2i64..=2).any(|dx| {
+                    let (nx, ny) = (i64::from(x) + dx, i64::from(y) + dy);
+                    if nx < 0 || ny < 0 || nx >= i64::from(image.0) || ny >= i64::from(image.1) {
+                        return false;
+                    }
+                    let there = pixel(image, nx as u32, ny as u32);
+                    (0..4).any(|c| here[c].abs_diff(there[c]) > 2)
+                })
+            })
+        };
+        for coarse in [0, 8] {
+            let full = draw_with(&gpu, false, 1.0, coarse, 0.0);
+            let half = draw_with(&gpu, true, 1.0, coarse, 0.0);
+            let mut differ = 0;
+            for y in 0..full.1 {
+                for x in 0..full.0 {
+                    let (a, b) = (pixel(&full, x, y), pixel(&half, x, y));
+                    if (0..4).all(|c| a[c].abs_diff(b[c]) <= 3) {
+                        continue;
+                    }
+                    assert!(
+                        edge(&full, x, y),
+                        "coarse {coarse}, ({x}, {y}) off an edge: {a:?} {b:?}"
+                    );
+                    differ += 1;
+                }
+            }
+            eprintln!("coarse {coarse}: {differ} pixels on edges differ from full resolution");
         }
     }
 
