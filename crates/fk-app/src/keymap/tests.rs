@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use fk_math::nalgebra::Vector2;
 
 use super::*;
-use crate::input::{KeyCode, MouseButton};
+use crate::input::{KeyCode, MouseButton, PadButton};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Act {
@@ -159,6 +159,124 @@ fn analog_axes_read_mouse_and_wheel() {
     assert_eq!(map.axis1(Act::Zoom), 2.0);
     frame(&mut map, &mut input, |_| {});
     assert!(map.released(Act::Look) && map.axis2(Act::Look) == Vector2::zeros());
+}
+
+fn with_pads() -> Bindings<Act> {
+    defaults()
+        .bind(Act::Move, Binding::Stick(Stick::Left))
+        .bind(Act::Look, Binding::StickMotion(Stick::Right))
+        .bind(
+            Act::Jump,
+            Binding::Button(ButtonInput::Pad(PadButton::South)),
+        )
+}
+
+#[test]
+fn pads_move_look_and_press() {
+    let mut map = KeyMap::new(with_pads());
+    let mut input = RawInput::default();
+    frame(&mut map, &mut input, |i| {
+        i.set_stick(Stick::Left, Vector2::new(0.0, 0.97));
+        i.press(KeyCode::KeyD);
+        i.set_stick(Stick::Right, Vector2::new(0.55, 0.97));
+        i.press(PadButton::South);
+    });
+    let walk = map.axis2(Act::Move);
+    assert!(
+        (walk.norm() - 1.0).abs() < 1e-12,
+        "keys and stick are clamped together"
+    );
+    assert!(map.pressed(Act::Jump));
+    // Pushed up, the look turns up, as the mouse moved up does (y down); at a frame of half a
+    // second, half the pixels a second; slower than its push off the rim.
+    let look = map.axis2(Act::Look);
+    let whole = KeyMap::<Act>::STICK_MOTION * 0.5;
+    assert!(
+        look.y < 0.0 && look.x > 0.0 && look.norm() <= whole + 1e-9,
+        "{look}"
+    );
+    frame(&mut map, &mut input, |i| {
+        i.set_stick(Stick::Right, Vector2::new(0.55, 0.0));
+    });
+    let half = map.axis2(Act::Look).x;
+    assert!(
+        (half - 0.25 * whole).abs() < 1e-9,
+        "half a push, a quarter of the turn"
+    );
+    frame(&mut map, &mut input, |i| i.release_all());
+    assert_eq!(map.axis2(Act::Look), Vector2::zeros());
+    assert!(map.released(Act::Jump));
+}
+
+#[test]
+fn a_stick_pushed_presses_once_and_lets_go_further_in() {
+    let up = Binding::StickPush(Stick::Left, crate::input::Direction::Up);
+    let mut map = KeyMap::new(Bindings::new().bind(Act::Jump, up));
+    let mut input = RawInput::default();
+    frame(&mut map, &mut input, |i| {
+        i.set_stick(Stick::Left, Vector2::new(0.0, 0.4))
+    });
+    assert!(!map.held(Act::Jump), "a third of the way is not yet a push");
+    frame(&mut map, &mut input, |i| {
+        i.set_stick(Stick::Left, Vector2::new(0.0, 0.8))
+    });
+    assert!(map.pressed(Act::Jump));
+    frame(&mut map, &mut input, |i| {
+        i.set_stick(Stick::Left, Vector2::new(0.0, 0.5))
+    });
+    assert!(
+        map.held(Act::Jump) && !map.pressed(Act::Jump),
+        "held, not pressed again"
+    );
+    frame(&mut map, &mut input, |i| {
+        i.set_stick(Stick::Left, Vector2::zeros())
+    });
+    assert!(map.released(Act::Jump));
+    let text = config::write(&map.bindings().clone());
+    assert!(text.contains("Jump = [\"LeftStickUp\"]"), "{text}");
+    assert_eq!(
+        config::parse(&text, &Bindings::new()).unwrap(),
+        *map.bindings()
+    );
+}
+
+#[test]
+fn a_file_without_pads_gets_the_defaults_ones() {
+    let text = config::write(&defaults());
+    let (bindings, upgraded) = config::parse_upgrading(&text, &with_pads()).unwrap();
+    assert!(upgraded);
+    assert_eq!(bindings, with_pads());
+    let written = config::write(&bindings);
+    assert!(written.contains("\"RightStickMotion\"") && written.contains("\"PadA\""));
+    let (again, upgraded) = config::parse_upgrading(&written, &with_pads()).unwrap();
+    assert!(!upgraded, "a file with pads is the player's own");
+    assert_eq!(again, with_pads());
+    // Unbinding the pad from one action is kept.
+    let edited = written.replace(", \"PadA\"", "");
+    let (kept, _) = config::parse_upgrading(&edited, &with_pads()).unwrap();
+    assert_eq!(kept.get(Act::Jump), defaults().get(Act::Jump));
+}
+
+#[test]
+fn a_rebind_takes_a_stick_as_the_action_reads_it() {
+    let mut map = KeyMap::new(defaults());
+    let mut input = RawInput::default();
+    map.listen(Act::Look, RebindTarget::Binding(1)).unwrap();
+    frame(&mut map, &mut input, |i| {
+        i.set_stick(Stick::Right, Vector2::new(0.9, 0.0));
+    });
+    assert_eq!(
+        map.bindings().get(Act::Look)[1],
+        Binding::StickMotion(Stick::Right)
+    );
+    map.listen(Act::Move, RebindTarget::Binding(1)).unwrap();
+    frame(&mut map, &mut input, |i| {
+        i.set_stick(Stick::Left, Vector2::new(0.0, -0.9));
+    });
+    assert_eq!(
+        map.bindings().get(Act::Move)[1],
+        Binding::Stick(Stick::Left)
+    );
 }
 
 #[test]

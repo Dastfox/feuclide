@@ -4,9 +4,10 @@ use std::sync::{Arc, OnceLock};
 
 use bevy_ecs::prelude::Resource;
 use fk_math::Real;
+use fk_math::nalgebra::Vector3;
 
 use crate::Gpu;
-use crate::frame::DiscBlock;
+use crate::gpu::Vec4f;
 
 /// How much of the [`Sky`](crate::Sky)'s sun and of its moon the scene leaves in view, as a
 /// resource the renderer writes: the share of the pixels inside each one's circle where no
@@ -21,6 +22,21 @@ pub struct DiscsSeen {
     pub sun: Real,
     /// The moon.
     pub moon: Real,
+    /// The [`SeenProbe`]'s circle, 0 without one.
+    pub probe: Real,
+}
+
+/// One more circle of the image for [`DiscsSeen`] to measure as it measures the sun and the
+/// moon, as a resource the game sets: the share of its pixels where the image's alpha says sky,
+/// which the windows onto the [`Elsewhere`](crate::Elsewhere) view pass on from that image. A
+/// body seen only in a mirror is measured there, along its reflected direction.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+pub struct SeenProbe {
+    /// Its direction, in the reference frame at the scene root's origin (carried to the eye as
+    /// the sky's discs are); `None` for none.
+    pub direction: Option<Vector3<Real>>,
+    /// Its angular radius, in radians, as a [`SkyDisc`](crate::SkyDisc)'s.
+    pub radius: Real,
 }
 
 /// Where a disc is in the read-back image: the copied square's offset in the buffer and size,
@@ -36,12 +52,12 @@ struct Region {
 
 /// What the copy in flight holds.
 struct Pending {
-    regions: [Option<Region>; 2],
+    regions: [Option<Region>; 3],
     /// Set by the GPU once the buffer is mapped, or failed to be.
     mapped: Option<Arc<OnceLock<Result<(), wgpu::BufferAsyncError>>>>,
 }
 
-/// Copies the pixels under the sun and the moon out of the image and reads them back.
+/// Copies the pixels under the sun, the moon and the probe out of the image and reads them back.
 pub(crate) struct DiscProbe {
     buffer: wgpu::Buffer,
     pending: Option<Pending>,
@@ -62,7 +78,7 @@ impl DiscProbe {
     pub(crate) fn new(gpu: &Gpu) -> Self {
         let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("fk discs seen"),
-            size: 2 * Self::REGION,
+            size: 3 * Self::REGION,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -86,10 +102,10 @@ impl DiscProbe {
             None => return self.seen,
             Some(Ok(())) => {
                 if let Ok(bytes) = self.buffer.get_mapped_range(..) {
-                    let [sun, moon] = pending
+                    let [sun, moon, probe] = pending
                         .regions
                         .map(|region| region.map_or(0.0, |region| share_of_sky(&bytes, &region)));
-                    self.seen = DiscsSeen { sun, moon };
+                    self.seen = DiscsSeen { sun, moon, probe };
                 }
                 self.buffer.unmap();
             }
@@ -99,24 +115,24 @@ impl DiscProbe {
         self.seen
     }
 
-    /// Records copying the pixels under `sun` and `moon` (eye-frame discs, as the sky shader
-    /// gets them) out of `color`, an image `proj_scale` projects onto, unless a copy is still in
-    /// flight.
+    /// Records copying the pixels under the sun, the moon and the probe (eye-frame directions
+    /// with the angular radius's sine in `w`, as the sky shader gets its discs; `None` for none)
+    /// out of `color`, an image `proj_scale` projects onto, unless a copy is still in flight.
     pub(crate) fn copy(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         color: &wgpu::Texture,
         proj_scale: [f32; 2],
-        [sun, moon]: [&DiscBlock; 2],
+        discs: [Option<&Vec4f>; 3],
     ) {
         if self.pending.is_some() {
             return;
         }
         let size = [color.width(), color.height()];
-        let mut regions = [None; 2];
-        for (k, disc) in [sun, moon].into_iter().enumerate() {
+        let mut regions = [None; 3];
+        for (k, disc) in discs.into_iter().enumerate() {
             let offset = k as u64 * Self::REGION;
-            let Some(region) = region(disc, proj_scale, size, offset) else {
+            let Some(region) = disc.and_then(|disc| region(disc, proj_scale, size, offset)) else {
                 continue;
             };
             encoder.copy_texture_to_buffer(
@@ -175,16 +191,16 @@ impl DiscProbe {
     }
 }
 
-/// The square of the image around `disc`, clipped to the image: its corner in pixels, and the
-/// region it fills in the buffer at `offset`. `None` when the disc is not drawn, behind the
-/// eye or off the image.
+/// The square of the image around `disc` (its eye-frame direction, its radius in `w`), clipped
+/// to the image: its corner in pixels, and the region it fills in the buffer at `offset`.
+/// `None` when the disc is not drawn, behind the eye or off the image.
 fn region(
-    disc: &DiscBlock,
+    disc: &Vec4f,
     [scale_x, scale_y]: [f32; 2],
     [width, height]: [u32; 2],
     offset: u64,
 ) -> Option<([u32; 2], Region)> {
-    let [x, y, z, radius] = disc.direction.0;
+    let [x, y, z, radius] = disc.0;
     if radius <= 0.0 || z >= -1e-4 {
         return None;
     }
@@ -248,17 +264,11 @@ fn share_of_sky(bytes: &[u8], region: &Region) -> Real {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Vec4f;
 
-    fn disc(direction: [f32; 3], radius: f32) -> DiscBlock {
+    fn disc(direction: [f32; 3], radius: f32) -> Vec4f {
         let [x, y, z] = direction;
         let n = (x * x + y * y + z * z).sqrt();
-        DiscBlock {
-            direction: Vec4f([x / n, y / n, z / n, radius]),
-            shape: Vec4f([0.0; 4]),
-            color: Vec4f([0.0; 4]),
-            glow: Vec4f([0.0; 4]),
-        }
+        Vec4f([x / n, y / n, z / n, radius])
     }
 
     /// An image of `region`'s square, sky where `sky` says so.

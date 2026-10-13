@@ -6,18 +6,22 @@ use fk_math::Real;
 use fk_math::nalgebra::Vector2;
 
 use super::{Action, ActionKind, Binding, Input, KeyMap};
-use crate::input::{ButtonInput, RawInput};
+use crate::input::{ButtonInput, RawInput, Stick};
 
 /// Mouse motion, in pixels within one frame, that counts as "the player moved the mouse" when
 /// listening for an axis.
 const MOTION_THRESHOLD: Real = 8.0;
 
+/// How far a stick is pushed, of its whole push, to count as "the player moved the stick".
+const STICK_THRESHOLD: Real = 0.5;
+
 /// Which binding of an action a rebind replaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RebindTarget {
     /// Binding number `index` of the action, or a new binding when `index` is the number of
-    /// bindings. A button action takes the next key or mouse button; a 2D axis the next mouse
-    /// motion or wheel motion; a 1D axis the next wheel motion.
+    /// bindings. A button action takes the next key, mouse or pad button; a 2D axis the next
+    /// mouse motion, wheel motion or stick pushed (as mouse motion if the action has a mouse or
+    /// stick motion binding already, else as a position); a 1D axis the next wheel motion.
     Binding(usize),
     /// One button of the composite binding number `index` (a [`Binding::ButtonPair`] or
     /// [`Binding::ButtonQuad`]). Takes the next key or mouse button.
@@ -215,7 +219,19 @@ impl<A: Action> KeyMap<A> {
                 ActionKind::Axis2 if input.mouse_motion().norm() >= MOTION_THRESHOLD => {
                     Some(Binding::MouseMotion)
                 }
-                ActionKind::Axis2 => (input.wheel() != Vector2::zeros()).then_some(Binding::Wheel),
+                ActionKind::Axis2 => {
+                    let pushed = [Stick::Left, Stick::Right]
+                        .into_iter()
+                        .find(|&stick| input.stick(stick).norm() >= STICK_THRESHOLD);
+                    let turns = self.bindings.get(action).iter().any(|binding| {
+                        matches!(binding, Binding::MouseMotion | Binding::StickMotion(_))
+                    });
+                    match pushed {
+                        Some(stick) if turns => Some(Binding::StickMotion(stick)),
+                        Some(stick) => Some(Binding::Stick(stick)),
+                        None => (input.wheel() != Vector2::zeros()).then_some(Binding::Wheel),
+                    }
+                }
             }
             .map(|binding| (binding, binding.inputs())),
             RebindTarget::Part { index, part } => pressed.and_then(|button| {

@@ -20,6 +20,7 @@ use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 use crate::App;
 use crate::input::{CursorGrab, RawInput};
+use crate::pad::Pads;
 use crate::window::{AppExit, Handover, Splash, WindowHandle, WindowMode, WindowSize};
 
 /// Why [`App::run`] stopped early.
@@ -65,6 +66,7 @@ pub(crate) fn run(app: App) -> Result<(), RunError> {
         last_frame: None,
         frame_interval,
         swallowed: HashSet::new(),
+        pads: Pads::new(),
         frames: FrameWatch::default(),
         error: None,
     };
@@ -86,6 +88,8 @@ struct Runner {
     frame_interval: Option<Duration>,
     /// Mouse buttons whose press grabbed the cursor; their release is not passed on either.
     swallowed: HashSet<MouseButton>,
+    /// The gamepads, the runner's own, so that they outlive a handover.
+    pads: Pads,
     frames: FrameWatch,
     error: Option<RunError>,
 }
@@ -168,6 +172,9 @@ impl Runner {
             self.frames.frame(delta, now);
         }
         self.last_frame = Some(now);
+        let focused = self.focused;
+        let mut input = self.app.world_mut().resource_mut::<RawInput>();
+        self.pads.poll(&mut input, focused);
         self.app.update(delta);
         self.apply_cursor_grab();
         self.apply_window_mode();

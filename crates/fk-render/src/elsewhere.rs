@@ -4,7 +4,7 @@ use bevy_ecs::component::Component;
 use bevy_ecs::resource::Resource;
 use fk_geometry::Geometry;
 
-use crate::Gpu;
+use crate::{Gpu, Lighting};
 
 /// Another eye the scene is drawn from before each frame, as a resource; the surfaces marked
 /// [`ShowsElsewhere`] show what it sees. With no [`eye`](Self::eye) nothing more is drawn, and
@@ -16,14 +16,19 @@ use crate::Gpu;
 /// (two reflections, an isometry: `mirror ∘ eye ∘ flip_up`) and [`flip`](Self::flip), and the
 /// image is turned back the right way up where it is shown.
 ///
-/// It is drawn at the window's size with the frame's camera, sky, light and shadows, and
-/// without the post effects, which the frame applies once to everything.
+/// It is drawn at the window's size with the frame's camera and shadows, the frame's sky and
+/// light unless it has a [`lighting`](Self::lighting) of its own, and without the post effects,
+/// which the frame applies once to everything.
 #[derive(Resource)]
 pub struct Elsewhere<G: Geometry> {
     /// The other eye's global pose, `None` for none.
     pub eye: Option<G::Isometry>,
     /// Whether its image is shown upside down.
     pub flip: bool,
+    /// The light, the sky and the fog it sees by, in place of the frame's [`Lighting`]: what
+    /// lies through a portal under another hour, a mirror showing another sky. `None` (the
+    /// default) for the frame's.
+    pub lighting: Option<Lighting>,
 }
 
 impl<G: Geometry> Default for Elsewhere<G> {
@@ -31,6 +36,7 @@ impl<G: Geometry> Default for Elsewhere<G> {
         Self {
             eye: None,
             flip: false,
+            lighting: None,
         }
     }
 }
@@ -40,6 +46,7 @@ impl<G: Geometry> Clone for Elsewhere<G> {
         Self {
             eye: self.eye,
             flip: self.flip,
+            lighting: self.lighting.clone(),
         }
     }
 }
@@ -49,6 +56,7 @@ impl<G: Geometry> std::fmt::Debug for Elsewhere<G> {
         f.debug_struct("Elsewhere")
             .field("eye", &self.eye)
             .field("flip", &self.flip)
+            .field("lighting", &self.lighting)
             .finish()
     }
 }

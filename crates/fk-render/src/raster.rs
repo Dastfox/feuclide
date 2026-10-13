@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::ops::Range;
+use std::time::Instant;
 
 use bevy_ecs::query::{Has, QueryState, Without};
 use bevy_ecs::world::World;
@@ -131,10 +132,12 @@ impl GpuNormalMaps {
         }
     }
 
-    /// Uploads `maps` again if any were added since, and their fade if it changed.
-    fn update(&mut self, gpu: &Gpu, maps: &NormalMaps) {
+    /// Uploads `maps` again if any were added since, and their fade if it changed; whether
+    /// the maps were.
+    fn update(&mut self, gpu: &Gpu, maps: &NormalMaps) -> bool {
         let now = (maps.len(), maps.size());
-        if now != self.uploaded {
+        let uploading = now != self.uploaded;
+        if uploading {
             self.bind_group = Self::upload(gpu, &self.layout, maps, &self.fade);
             self.uploaded = now;
         }
@@ -148,6 +151,7 @@ impl GpuNormalMaps {
             );
             self.faded = faded;
         }
+        uploading
     }
 
     fn upload(
@@ -587,13 +591,26 @@ impl Builder {
 impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
     fn warm(&mut self, gpu: &Gpu, world: &mut World) {
         if let Some(meshes) = world.get_resource::<Meshes>() {
+            let (before, started) = (self.meshes.len(), Instant::now());
             self.upload_new_meshes(gpu, meshes);
+            if self.meshes.len() > before {
+                let new = self.meshes.len() - before;
+                tracing::info!("{new} meshes uploaded in {:.0?}", started.elapsed());
+            }
         }
         if let Some(deforms) = world.get_resource::<Deforms>() {
+            let (before, started) = (self.pipelines.len(), Instant::now());
             self.compile_new_deforms(deforms);
+            if self.pipelines.len() > before {
+                let new = self.pipelines.len() - before;
+                tracing::info!("{new} deforms compiled in {:.0?}", started.elapsed());
+            }
         }
         if let Some(maps) = world.get_resource::<NormalMaps>() {
-            self.normal_maps.update(gpu, maps);
+            let started = Instant::now();
+            if self.normal_maps.update(gpu, maps) {
+                tracing::info!("normal maps uploaded in {:.0?}", started.elapsed());
+            }
         }
     }
 

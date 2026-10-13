@@ -127,6 +127,25 @@ impl Default for SkyDisc {
     }
 }
 
+/// Most bodies [`SkyDiscs`] draws.
+pub const MAX_SKY_DISCS: usize = 24;
+
+/// A body in the sky with a ring round it in its own lines and colour, `ring` times its radius
+/// (0 for none): a star in a ring.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RingedDisc {
+    /// The body.
+    pub disc: SkyDisc,
+    /// The ring's radius, times the body's; 0 for none.
+    pub ring: Real,
+}
+
+/// More bodies in the [`Sky`] than its sun and moon, as a resource: drawn as those are, behind
+/// every surface, unlit, their glows in the sky and in what far surfaces fade into. The first
+/// [`MAX_SKY_DISCS`] are drawn; none by default.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct SkyDiscs(pub Vec<RingedDisc>);
+
 /// Shadows cast by the directional light of [`Lighting`], as a resource.
 ///
 /// One square shadow map centred on the eye, its centre snapped to whole texels so shadows do
@@ -865,6 +884,8 @@ pub(crate) struct DiscBlock {
     pub shape: Vec4f,
     pub color: Vec4f,
     pub glow: Vec4f,
+    /// x: the ring round it, times its radius, 0 for none.
+    pub ring: Vec4f,
 }
 
 #[derive(ShaderType)]
@@ -894,6 +915,9 @@ pub(crate) struct LightingBlock {
     /// The point lights nearest the eye; x of `point_count` says how many are used.
     pub point_lights: [PointLightBlock; crate::light::MAX_POINT_LIGHTS],
     pub point_count: Vec4f,
+    /// [`SkyDiscs`]; x of `disc_count` says how many are used.
+    pub discs: [DiscBlock; MAX_SKY_DISCS],
+    pub disc_count: Vec4f,
 }
 
 #[derive(ShaderType, Clone, Copy, Default)]

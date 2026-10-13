@@ -53,6 +53,7 @@ mod color;
 mod cull;
 mod deform;
 mod elsewhere;
+mod fields;
 mod frame;
 mod gpu;
 mod graph;
@@ -88,9 +89,9 @@ pub use cull::Frustum;
 pub use deform::{CastsNoShadow, Deform, DeformHandle, DeformShader, Deforms};
 pub use elsewhere::{Elsewhere, SeenBy, ShowsElsewhere};
 pub use frame::{
-    Afterimage, DiscShape, Gauge, Ink, LayerRender, Lids, Lighting, Mark, Mosh, MoshKind,
-    MoshPatch, Multisampling, PostMode, PostSettings, RenderStats, Settle, Shadows, Sky, SkyDisc,
-    TextPanel, Tunnel, Vsync, Warp, WorldUniforms,
+    Afterimage, DiscShape, Gauge, Ink, LayerRender, Lids, Lighting, MAX_SKY_DISCS, Mark, Mosh,
+    MoshKind, MoshPatch, Multisampling, PostMode, PostSettings, RenderStats, RingedDisc, Settle,
+    Shadows, Sky, SkyDisc, SkyDiscs, TextPanel, Tunnel, Vsync, Warp, WorldUniforms,
 };
 pub use gpu::{Gpu, Vec2f, Vec4f, matrix_columns};
 pub use graph::SharedDevice;
@@ -109,7 +110,7 @@ pub use renderer::{
     FrameBindings, FrameView, GeometryRenderer, Hidden, OnLayer, RendererFactory, RendererSetup,
 };
 pub use screenshot::Screenshots;
-pub use seen::DiscsSeen;
+pub use seen::{DiscsSeen, SeenProbe};
 pub use shadow::ShadowView;
 pub use sky_image::SkyImage;
 pub use timing::GpuTimings;

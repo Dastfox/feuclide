@@ -8,7 +8,8 @@
 //! 3. [`FixedUpdate`], zero or more times: one run per [`Time::fixed_step`] of accumulated time.
 //! 4. [`Update`], [`PostUpdate`], [`Render`].
 //!
-//! [`RawInput`] holds what happened since the previous frame, on physical keys. The [`keymap`]
+//! [`RawInput`] holds what happened since the previous frame, on physical keys, the mouse and
+//! the gamepads (read through gilrs before each frame, every pad as one). The [`keymap`]
 //! turns it into the actions a game declares, with bindings the player can change.
 //!
 //! The app is built for one geometry, chosen at startup with [`App::set_geometry`]. This crate
@@ -17,6 +18,7 @@
 mod app;
 pub mod input;
 pub mod keymap;
+mod pad;
 mod profile;
 mod progress;
 mod runner;
@@ -25,7 +27,9 @@ mod time;
 mod window;
 
 pub use app::{ActiveGeometry, App, Plugin};
-pub use input::{ButtonInput, CursorGrab, KeyCode, MouseButton, RawInput};
+pub use input::{
+    ButtonInput, CursorGrab, Direction, KeyCode, MouseButton, PadButton, RawInput, Stick,
+};
 pub use profile::FrameProfile;
 pub use progress::Progress;
 pub use runner::RunError;

@@ -7,7 +7,9 @@
 //! bindings change in game. [`KeyMap::listen`] starts the rebind flow for one action.
 //!
 //! Bindings are on physical keys ([`KeyCode`](crate::KeyCode)), so WASD on QWERTY and ZQSD on
-//! AZERTY are one and the same binding.
+//! AZERTY are one and the same binding. Gamepads bind their buttons as keys are bound, and their
+//! sticks as a position ([`Binding::Stick`]) or as a turn read like the mouse's
+//! ([`Binding::StickMotion`]).
 
 mod config;
 mod rebind;
@@ -23,7 +25,7 @@ use bevy_ecs::system::{Res, ResMut};
 use fk_math::Real;
 use fk_math::nalgebra::Vector2;
 
-use crate::input::{ButtonInput, RawInput};
+use crate::input::{ButtonInput, Direction, RawInput, Stick};
 use crate::{App, Plugin, PreUpdate, Time};
 
 pub use rebind::{Part, Rebind, RebindError, RebindTarget, Resolution};
@@ -90,6 +92,16 @@ pub enum Binding {
     MouseMotion,
     /// Wheel motion in lines this frame. Binds a 2D axis, or its vertical part a 1D axis.
     Wheel,
+    /// Where a gamepad's stick is pushed, x to the right and y up (forward). Binds a 2D axis;
+    /// it is clamped to the unit disc with the button part.
+    Stick(Stick),
+    /// A gamepad's stick read as mouse motion: pixels this frame, x to the right and y down,
+    /// [`KeyMap::stick_motion`] pixels a second at full tilt and slower than its push near the
+    /// centre, for fine aim. Binds a 2D axis, beside [`MouseMotion`](Self::MouseMotion).
+    StickMotion(Stick),
+    /// A gamepad's stick pushed one way, down past half its push (and up again under a third),
+    /// as a button: for menus. Binds a button.
+    StickPush(Stick, Direction),
 }
 
 /// Something a binding listens to.
@@ -101,6 +113,8 @@ pub enum Input {
     MouseMotion,
     /// The wheel.
     Wheel,
+    /// A gamepad's stick.
+    Stick(Stick),
 }
 
 impl Binding {
@@ -108,11 +122,12 @@ impl Binding {
     pub fn fits(&self, kind: ActionKind) -> bool {
         matches!(
             (self, kind),
-            (Self::Button(_), ActionKind::Button)
+            (Self::Button(_) | Self::StickPush(..), ActionKind::Button)
                 | (Self::ButtonPair { .. }, ActionKind::Axis1)
                 | (Self::ButtonQuad { .. }, ActionKind::Axis2)
                 | (Self::MouseMotion, ActionKind::Axis2)
                 | (Self::Wheel, ActionKind::Axis1 | ActionKind::Axis2)
+                | (Self::Stick(_) | Self::StickMotion(_), ActionKind::Axis2)
         )
     }
 
@@ -131,7 +146,17 @@ impl Binding {
             } => [up, down, left, right].map(Input::Button).to_vec(),
             Self::MouseMotion => vec![Input::MouseMotion],
             Self::Wheel => vec![Input::Wheel],
+            Self::Stick(stick) | Self::StickMotion(stick) | Self::StickPush(stick, _) => {
+                vec![Input::Stick(stick)]
+            }
         }
+    }
+
+    /// Whether the binding is on a gamepad.
+    pub fn is_pad(&self) -> bool {
+        self.inputs()
+            .iter()
+            .any(|input| matches!(input, Input::Button(ButtonInput::Pad(_)) | Input::Stick(_)))
     }
 
     /// Whether the binding listens to `input`.
@@ -141,7 +166,8 @@ impl Binding {
 }
 
 /// A short name for a player: the buttons as [`ButtonInput`] names them, a pair as
-/// `negative/positive`, four directions as `up/left/down/right` (`W/A/S/D`).
+/// `negative/positive`, four directions as `up/left/down/right` (`W/A/S/D`), a stick as
+/// `Left stick`.
 impl std::fmt::Display for Binding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -155,6 +181,10 @@ impl std::fmt::Display for Binding {
             } => write!(f, "{up}/{left}/{down}/{right}"),
             Self::MouseMotion => f.write_str("Mouse"),
             Self::Wheel => f.write_str("Wheel"),
+            Self::Stick(stick) | Self::StickMotion(stick) => f.write_str(stick.label()),
+            Self::StickPush(stick, direction) => {
+                write!(f, "{} {}", stick.label(), direction.label())
+            }
         }
     }
 }
@@ -326,9 +356,16 @@ pub struct KeyMap<A: Action> {
     triggered: HashSet<A>,
     file: Option<config::ConfigFile>,
     dirty: bool,
+    /// The mouse pixels a second a [`Binding::StickMotion`] reads as with its stick pushed
+    /// whole, so that a look bound to the mouse and a stick turns as fast with either as the
+    /// game wants.
+    pub stick_motion: Real,
 }
 
 impl<A: Action> KeyMap<A> {
+    /// [`KeyMap::stick_motion`] until the game sets it.
+    pub const STICK_MOTION: Real = 1200.0;
+
     /// A key map using `defaults`, with no bindings file.
     pub fn new(defaults: Bindings<A>) -> Self {
         Self {
@@ -343,6 +380,7 @@ impl<A: Action> KeyMap<A> {
             triggered: HashSet::new(),
             file: None,
             dirty: false,
+            stick_motion: Self::STICK_MOTION,
         }
     }
 
@@ -350,7 +388,9 @@ impl<A: Action> KeyMap<A> {
     ///
     /// The file is read now. Actions it does not list, or lists with bindings that cannot be
     /// read, keep their defaults. A missing file is created with the defaults; a file that is not
-    /// valid TOML is left alone and the defaults are used until it is fixed.
+    /// valid TOML is left alone and the defaults are used until it is fixed. A file that binds
+    /// nothing on a gamepad (written before the game had them) gets the defaults' pad bindings
+    /// added to what it lists, and is written again with them.
     pub fn with_file(defaults: Bindings<A>, path: impl Into<PathBuf>) -> Self {
         let mut map = Self::new(defaults);
         map.file = Some(config::ConfigFile::new(path.into()));
@@ -460,7 +500,7 @@ impl<A: Action> KeyMap<A> {
             let (down, tapped, value) = if frozen {
                 (false, false, Vector2::zeros())
             } else {
-                let (down, tapped, value) = self.read(action, input);
+                let (down, tapped, value) = self.read(action, input, dt);
                 (down, tapped || triggered, value)
             };
             if let Some(state) = self.states.get_mut(&action) {
@@ -478,12 +518,15 @@ impl<A: Action> KeyMap<A> {
         }
     }
 
-    fn read(&self, action: A, input: &RawInput) -> (bool, bool, Vector2<Real>) {
+    fn read(&self, action: A, input: &RawInput, dt: Real) -> (bool, bool, Vector2<Real>) {
         let level = |button| Real::from(u8::from(self.button(input, button).0));
         let mut down = false;
         let mut tapped = false;
         let mut buttons = Vector2::zeros();
         let mut analog = Vector2::zeros();
+        // A stick pushed as a button lets go further in than it went down, so it does not
+        // flutter at the threshold.
+        let push = if self.state(action).held() { 0.35 } else { 0.5 };
         for binding in self.bindings.get(action) {
             match *binding {
                 Binding::Button(button) => {
@@ -507,6 +550,16 @@ impl<A: Action> KeyMap<A> {
                     ActionKind::Axis1 => analog.x += input.wheel().y,
                     _ => analog += input.wheel(),
                 },
+                Binding::Stick(stick) => buttons += input.stick(stick),
+                Binding::StickPush(stick, direction) => {
+                    down |= input.stick_pushed(stick, direction, push);
+                }
+                Binding::StickMotion(stick) => {
+                    // Squared: half a push turns a quarter as fast, for fine aim.
+                    let push = input.stick(stick);
+                    let turn = push * push.norm() * self.stick_motion * dt;
+                    analog += Vector2::new(turn.x, -turn.y);
+                }
             }
         }
         match action.kind() {
@@ -554,11 +607,16 @@ impl<A: Action> KeyMap<A> {
     fn reload(&mut self) {
         let Some(file) = &mut self.file else { return };
         match file.load(&self.defaults) {
-            config::Loaded::Bindings(bindings) => {
+            config::Loaded::Bindings(bindings, upgraded) => {
                 if bindings != self.bindings {
                     tracing::info!("bindings loaded from {}", file.path.display());
                 }
                 self.bindings = bindings;
+                if upgraded {
+                    tracing::info!("gamepad bindings added to {}", file.path.display());
+                    self.dirty = true;
+                    self.save_if_dirty();
+                }
             }
             config::Loaded::Missing => {
                 self.bindings = self.defaults.clone();

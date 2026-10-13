@@ -66,6 +66,8 @@ pub struct Gpu {
     pub queue: wgpu::Queue,
     /// Which adapter it runs on.
     pub adapter: wgpu::AdapterInfo,
+    /// The ray marcher's fields compiled on the device, for every renderer on it.
+    pub(crate) kept: crate::fields::KeptFields,
 }
 
 impl Gpu {
@@ -91,6 +93,7 @@ impl Gpu {
             device,
             queue,
             adapter: adapter.get_info(),
+            kept: Default::default(),
         })
     }
 }

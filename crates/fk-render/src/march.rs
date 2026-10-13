@@ -2,6 +2,8 @@
 //! composited with the raster path through the shared depth encoding.
 
 use std::marker::PhantomData;
+use std::sync::Arc;
+use std::time::Instant;
 
 use bevy_ecs::component::Component;
 use bevy_ecs::query::{Has, QueryState, Without};
@@ -13,6 +15,9 @@ use fk_math::Real;
 use fk_scene::ViewRelative;
 use fk_shaders::Shader;
 
+use crate::fields::{
+    Builder, COARSE, Field, FieldKey, HALF_COLOR, HALF_DISTANCE, Variant, build_later, build_now,
+};
 use crate::frame::uniform_bytes;
 use crate::gpu::{Vec4f, matrix_columns};
 use crate::quotient::{MAX_FOLD_FACES, QuotientView, Unrepeated};
@@ -22,15 +27,11 @@ use crate::{Gpu, RenderStats};
 /// How many `vec4`s of its own a [`RayMarched`] scene passes to its distance field.
 pub const SDF_PARAMS: usize = 192;
 
-const HALF_COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// Pixels across the tiles of a scene marched one tile in each square of them
 /// ([`RayMarched::interleave`]): `INTERLEAVED` in `ray_march.wgsl`.
 const INTERLEAVED: u32 = 8;
-/// Where each block's rays start, and the steps it took to get there.
-const COARSE: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Float;
 /// Pixels to a group of the compute pass that lists the pixels traced at full resolution.
 const CLASSIFY_GROUP: u32 = 8;
-const HALF_DISTANCE: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 
 /// A signed distance field: a WGSL module that replaces the engine's `fk::sdf` (a ball of
 /// radius 1) for the scenes marked with its [`RayMarched`], plus the modules it imports.
@@ -47,7 +48,7 @@ const HALF_DISTANCE: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 /// and `fn sdf_moshed(q: vec3<f32>) -> bool`: where it is true (and `sdf_kept` is not) the
 /// surface carries the first patch's mosh wherever it is on the image, out of the patch too,
 /// block by block round it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SdfShader {
     /// A name for messages, and the file path the module's errors point into.
     pub name: String,
@@ -96,7 +97,7 @@ impl SdfShader {
         self.source.contains("fn sdf_moshed")
     }
 
-    fn compose(
+    pub(crate) fn compose(
         &self,
         shader: Shader,
         geometry: &str,
@@ -520,30 +521,6 @@ impl MarchBlock {
     }
 }
 
-/// The three pipelines of one field.
-struct Pipelines {
-    /// Full resolution, into the opaque pass.
-    full: wgpu::RenderPipeline,
-    /// Half resolution, into the offscreen targets.
-    half: wgpu::RenderPipeline,
-    /// The offscreen targets into the opaque pass.
-    composite: wgpu::RenderPipeline,
-    /// `full` and `composite` drawn over everything ([`RayMarched::over`]).
-    full_over: wgpu::RenderPipeline,
-    composite_over: wgpu::RenderPipeline,
-    /// The cones of [`RayMarched::coarse`], into the scene's coarse target.
-    coarse: wgpu::RenderPipeline,
-    /// A scene marched one tile in each square of them ([`RayMarched::interleave`]): every
-    /// pixel carried from its last frame, then the tiles marched this frame drawn over them.
-    carry: wgpu::RenderPipeline,
-    tiles: wgpu::RenderPipeline,
-    /// At half resolution, the pixels whose own rays the composite needs: listed, the
-    /// dispatch over them written, and their rays traced at full resolution.
-    classify: wgpu::ComputePipeline,
-    finalize: wgpu::ComputePipeline,
-    refine: wgpu::ComputePipeline,
-}
-
 /// What lists and traces at full resolution the pixels a half-resolution scene's composite
 /// needs the rays of: how many, the dispatch over them, the list, and the groups binding them.
 struct Edges {
@@ -618,11 +595,8 @@ pub struct RayMarchPipeline<G: GpuGeometry> {
     coarse_layout: wgpu::BindGroupLayout,
     listing_layout: wgpu::BindGroupLayout,
     tracing_layout: wgpu::BindGroupLayout,
-    full_layout: wgpu::PipelineLayout,
-    composite_layout: wgpu::PipelineLayout,
-    cone_layout: wgpu::PipelineLayout,
-    listing_pipeline_layout: wgpu::PipelineLayout,
-    tracing_pipeline_layout: wgpu::PipelineLayout,
+    /// What builds the fields' pipelines.
+    builder: Arc<Builder>,
     /// What a scene marched at full resolution binds where the pixels traced at full
     /// resolution would be.
     no_refined: wgpu::TextureView,
@@ -630,11 +604,9 @@ pub struct RayMarchPipeline<G: GpuGeometry> {
     /// scene ahead where that scene's distances would be.
     no_coarse: wgpu::TextureView,
     no_distance: wgpu::TextureView,
-    color_format: wgpu::TextureFormat,
-    depth_format: wgpu::TextureFormat,
-    sample_count: u32,
-    /// By field; `None` for one that did not compile, which is not drawn.
-    pipelines: Vec<Option<Pipelines>>,
+    /// By field; `None` for one that did not compile, which is not drawn. Each pipeline is
+    /// built the first time a scene needs it, unless it was built ahead.
+    pipelines: Vec<Option<Arc<Field>>>,
     /// The metric the pipelines were built with.
     metric: Option<String>,
     query: Option<QueryState<Marched<G>, Without<Hidden>>>,
@@ -732,7 +704,7 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
                 immediate_size: 0,
             })
         };
-        Self {
+        let builder = Arc::new(Builder {
             device: device.clone(),
             full_layout: pipeline_layout(&[
                 Some(setup.frame_layout),
@@ -746,18 +718,25 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
                 Some(&half_layout),
             ]),
             cone_layout: pipeline_layout(&[Some(setup.frame_layout), Some(&march_layout)]),
-            listing_pipeline_layout: pipeline_layout(&[
+            listing_layout: pipeline_layout(&[
                 Some(setup.frame_layout),
                 Some(&march_layout),
                 Some(&coarse_layout),
                 Some(&listing_layout),
             ]),
-            tracing_pipeline_layout: pipeline_layout(&[
+            tracing_layout: pipeline_layout(&[
                 Some(setup.frame_layout),
                 Some(&march_layout),
                 Some(&coarse_layout),
                 Some(&tracing_layout),
             ]),
+            color_format: setup.color_format,
+            depth_format: setup.depth_format,
+            sample_count: setup.sample_count,
+        });
+        Self {
+            device: device.clone(),
+            builder,
             march_layout,
             half_layout,
             coarse_layout,
@@ -766,9 +745,6 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
             no_refined,
             no_coarse,
             no_distance,
-            color_format: setup.color_format,
-            depth_format: setup.depth_format,
-            sample_count: setup.sample_count,
             pipelines: Vec::new(),
             metric: None,
             query: None,
@@ -780,127 +756,71 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
         }
     }
 
-    fn compile_new_sdfs(&mut self, sdfs: &Sdfs) {
-        for shader in &sdfs.all()[self.pipelines.len()..] {
-            let pipelines =
-                match shader.compose(Shader::RayMarch, G::SHADER, self.metric.as_deref()) {
-                    Ok(module) => Some(self.build(&shader.name, module)),
-                    Err(error) => {
-                        let name = &shader.name;
-                        tracing::error!(
-                            "distance field {name} does not compile, not drawn: {error}"
-                        );
-                        None
-                    }
-                };
-            self.pipelines.push(pipelines);
+    /// Compiles the fields added to `sdfs` since: their shaders now (or as kept on the
+    /// device), the pipelines `world`'s scenes draw them with now too, every other one of
+    /// them ahead of need.
+    fn compile_new_sdfs(&mut self, gpu: &Gpu, sdfs: &Sdfs, world: &mut World) {
+        let first = self.pipelines.len();
+        if sdfs.all().len() <= first {
+            return;
         }
-    }
-
-    fn build(&self, label: &str, module: fk_shaders::naga::Module) -> Pipelines {
-        let shader = self
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(label),
-                source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
-            });
-        let pipeline_from = |vertex: &str,
-                             layout,
-                             entry,
-                             targets: &[Option<wgpu::ColorTargetState>],
-                             depth: Option<wgpu::CompareFunction>| {
-            self.device
-                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some(label),
-                    layout: Some(layout),
-                    vertex: wgpu::VertexState {
-                        module: &shader,
-                        entry_point: Some(vertex),
-                        compilation_options: Default::default(),
-                        buffers: &[],
-                    },
-                    primitive: Default::default(),
-                    depth_stencil: depth.map(|compare| wgpu::DepthStencilState {
-                        format: self.depth_format,
-                        depth_write_enabled: Some(true),
-                        depth_compare: Some(compare),
-                        stencil: Default::default(),
-                        bias: Default::default(),
-                    }),
-                    multisample: wgpu::MultisampleState {
-                        count: if depth.is_some() {
-                            self.sample_count
-                        } else {
-                            1
-                        },
-                        ..Default::default()
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: &shader,
-                        entry_point: Some(entry),
-                        compilation_options: Default::default(),
-                        targets,
-                    }),
-                    multiview_mask: None,
-                    cache: None,
-                })
+        let started = Instant::now();
+        let keys = sdfs.all()[first..]
+            .iter()
+            .map(|shader| FieldKey {
+                geometry: G::SHADER,
+                shader: shader.clone(),
+                metric: self.metric.clone(),
+                color_format: self.builder.color_format,
+                depth_format: self.builder.depth_format,
+                sample_count: self.builder.sample_count,
+            })
+            .collect();
+        let fields = gpu.kept.fields(&self.builder, keys, |key| {
+            key.shader
+                .compose(Shader::RayMarch, key.geometry, key.metric.as_deref())
+        });
+        self.pipelines.extend(fields);
+        let settings = world
+            .get_resource::<RayMarching>()
+            .cloned()
+            .unwrap_or_default();
+        let new = |index: usize| {
+            self.pipelines
+                .get(index)
+                .filter(|_| index >= first)
+                .cloned()
+                .flatten()
         };
-        let pipeline = |layout,
-                        entry,
-                        targets: &[Option<wgpu::ColorTargetState>],
-                        depth: Option<wgpu::CompareFunction>| {
-            pipeline_from("vertex", layout, entry, targets, depth)
-        };
-        let compute = |layout, entry| {
-            self.device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some(label),
-                    layout: Some(layout),
-                    module: &shader,
-                    entry_point: Some(entry),
-                    compilation_options: Default::default(),
-                    cache: None,
-                })
-        };
-        let opaque = [Some(self.color_format.into())];
-        let (tested, over) = (
-            Some(wgpu::CompareFunction::Greater),
-            Some(wgpu::CompareFunction::Always),
+        // What the scenes there are draw with: now, before the first frame needs it.
+        let mut marched = world.query::<&RayMarched>();
+        let now: Vec<_> = marched
+            .iter(world)
+            .filter_map(|marched| new(marched.sdf.0 as usize).map(|field| (field, marched)))
+            .flat_map(|(field, marched)| {
+                likely(marched, &settings)
+                    .into_iter()
+                    .map(move |variant| (field.clone(), variant))
+            })
+            .collect();
+        build_now(&now);
+        tracing::info!(
+            "{} distance fields compiled in {:.0?}",
+            self.pipelines.len() - first,
+            started.elapsed()
         );
-        Pipelines {
-            full: pipeline(&self.full_layout, "fragment", &opaque, tested),
-            half: pipeline(
-                &self.full_layout,
-                "fragment_half",
-                &[Some(HALF_COLOR.into()), Some(HALF_DISTANCE.into())],
-                None,
-            ),
-            composite: pipeline(&self.composite_layout, "composite", &opaque, tested),
-            full_over: pipeline(&self.full_layout, "fragment", &opaque, over),
-            composite_over: pipeline(&self.composite_layout, "composite", &opaque, over),
-            coarse: pipeline(
-                &self.cone_layout,
-                "fragment_coarse",
-                &[Some(COARSE.into())],
-                None,
-            ),
-            carry: pipeline(
-                &self.full_layout,
-                "fragment_carry",
-                &[Some(HALF_COLOR.into()), Some(HALF_DISTANCE.into())],
-                None,
-            ),
-            tiles: pipeline_from(
-                "vertex_tiles",
-                &self.full_layout,
-                "fragment_half",
-                &[Some(HALF_COLOR.into()), Some(HALF_DISTANCE.into())],
-                None,
-            ),
-            classify: compute(&self.listing_pipeline_layout, "classify"),
-            finalize: compute(&self.listing_pipeline_layout, "finalize"),
-            refine: compute(&self.tracing_pipeline_layout, "refine"),
-        }
+        // The rest ahead of need: first what a scene of each would draw with as marching goes
+        // (a scene not drawn yet, its rays started from cones), then every other pipeline
+        // (drawn over everything, halved).
+        let fields: Vec<_> = (first..self.pipelines.len()).filter_map(new).collect();
+        let usual = likely(&RayMarched::new(SdfHandle(0)), &settings);
+        let later = usual
+            .iter()
+            .chain(&[Variant::Coarse])
+            .chain(&Variant::ALL)
+            .flat_map(|&variant| fields.iter().map(move |field| (field.clone(), variant)))
+            .collect();
+        build_later(later);
     }
 
     fn coarse_targets(&self, size: [u32; 2]) -> CoarseTargets {
@@ -1072,7 +992,7 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
 }
 
 impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
-    fn warm(&mut self, _: &Gpu, world: &mut World) {
+    fn warm(&mut self, gpu: &Gpu, world: &mut World) {
         let metric = world
             .get_resource::<RayMarching>()
             .and_then(|settings| settings.metric.clone());
@@ -1080,8 +1000,10 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
             self.metric = metric;
             self.pipelines.clear();
         }
-        if let Some(sdfs) = world.get_resource::<Sdfs>() {
-            self.compile_new_sdfs(sdfs);
+        if world.contains_resource::<Sdfs>() {
+            world.resource_scope(|world, sdfs: bevy_ecs::world::Mut<'_, Sdfs>| {
+                self.compile_new_sdfs(gpu, &sdfs, world);
+            });
         }
     }
 
@@ -1264,6 +1186,13 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
             }
             gpu.queue
                 .write_buffer(&scene.uniform, 0, &uniform_bytes(&block));
+            // The pipelines it draws with this frame, built now unless they were ahead.
+            if let Some(Some(field)) = self.pipelines.get(marched.sdf.0 as usize) {
+                let carried = tiles_marched.is_some();
+                for variant in drawn_with(cones > 0, offscreen, carried, half, marched.over) {
+                    field.get(variant);
+                }
+            }
         }
         // Where each scene's rays start and stop: its own cones, and the distances of the
         // scene ahead (not its own).
@@ -1298,8 +1227,8 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
             .iter()
             .filter(|scene| scene.coarsened)
         {
-            let (Some(Some(pipelines)), Some(targets)) =
-                (self.pipelines.get(scene.sdf as usize), &scene.coarse)
+            let (Some(pipeline), Some(targets)) =
+                (self.pipeline(scene, Variant::Coarse), &scene.coarse)
             else {
                 continue;
             };
@@ -1316,7 +1245,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
                 })],
                 ..Default::default()
             });
-            pass.set_pipeline(&pipelines.coarse);
+            pass.set_pipeline(pipeline);
             pass.set_bind_group(0, bindings.frame, &[]);
             pass.set_bind_group(1, &scene.bind_group, &[]);
             pass.draw(0..3, 0..1);
@@ -1327,7 +1256,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
             .iter()
             .filter(|scene| scene.halved && !scene.ahead);
         for scene in ahead.chain(others) {
-            let (Some(Some(pipelines)), Some(targets)) =
+            let (Some(Some(field)), Some(targets)) =
                 (self.pipelines.get(scene.sdf as usize), &scene.half)
             else {
                 continue;
@@ -1351,20 +1280,29 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
             pass.set_bind_group(0, bindings.frame, &[]);
             pass.set_bind_group(1, &scene.bind_group, &[]);
             pass.set_bind_group(2, self.starts(scene), &[]);
-            if let Some(tiles) = scene.carried {
+            if let (Some(tiles), Some(carry), Some(marched)) = (
+                scene.carried,
+                field.render(Variant::Carry),
+                field.render(Variant::Tiles),
+            ) {
                 // Every pixel carried, the tiles of this frame marched over them.
-                pass.set_pipeline(&pipelines.carry);
+                pass.set_pipeline(carry);
                 pass.draw(0..3, 0..1);
-                pass.set_pipeline(&pipelines.tiles);
+                pass.set_pipeline(marched);
                 pass.draw(0..6, 0..tiles);
-            } else {
-                pass.set_pipeline(&pipelines.half);
+            } else if let Some(half) = field.render(Variant::Half) {
+                pass.set_pipeline(half);
                 pass.draw(0..3, 0..1);
             }
             drop(pass);
             // The pixels between which the half resolution cannot tell: listed, and their own
             // rays traced together at full resolution.
-            let Some((edges, full)) = &targets.edges else {
+            let (Some((edges, full)), Some(classify), Some(finalize), Some(refine)) = (
+                &targets.edges,
+                field.compute(Variant::Classify),
+                field.compute(Variant::Finalize),
+                field.compute(Variant::Refine),
+            ) else {
                 continue;
             };
             encoder.clear_buffer(&edges.count, 0, None);
@@ -1376,16 +1314,16 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
             pass.set_bind_group(1, &scene.bind_group, &[]);
             pass.set_bind_group(2, self.starts(scene), &[]);
             pass.set_bind_group(3, &edges.listing, &[]);
-            pass.set_pipeline(&pipelines.classify);
+            pass.set_pipeline(classify);
             pass.dispatch_workgroups(
                 full[0].div_ceil(CLASSIFY_GROUP),
                 full[1].div_ceil(CLASSIFY_GROUP),
                 1,
             );
-            pass.set_pipeline(&pipelines.finalize);
+            pass.set_pipeline(finalize);
             pass.dispatch_workgroups(1, 1, 1);
             pass.set_bind_group(3, &edges.tracing, &[]);
-            pass.set_pipeline(&pipelines.refine);
+            pass.set_pipeline(refine);
             pass.dispatch_workgroups_indirect(&edges.args, 0);
         }
     }
@@ -1408,6 +1346,15 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
 }
 
 impl<G: GpuGeometry> RayMarchPipeline<G> {
+    /// `scene`'s field's `variant`, if it is built (as [`prepare`](GeometryRenderer::prepare)
+    /// builds every one the frame draws with).
+    fn pipeline(&self, scene: &Scene, variant: Variant) -> Option<&wgpu::RenderPipeline> {
+        self.pipelines
+            .get(scene.sdf as usize)?
+            .as_ref()?
+            .render(variant)
+    }
+
     /// Where `scene`'s rays start and stop, as [`prepare`](GeometryRenderer::prepare) bound
     /// them this frame.
     fn starts<'a>(&'a self, scene: &'a Scene) -> &'a wgpu::BindGroup {
@@ -1423,26 +1370,25 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
             if layer && !scene.layer {
                 continue;
             }
-            let Some(Some(pipelines)) = self.pipelines.get(scene.sdf as usize) else {
+            let variant = match (scene.halved, scene.over) {
+                (true, false) => Variant::Composite,
+                (true, true) => Variant::CompositeOver,
+                (false, false) => Variant::Full,
+                (false, true) => Variant::FullOver,
+            };
+            let Some(pipeline) = self.pipeline(scene, variant) else {
                 continue;
             };
-            match (&scene.half, scene.halved, scene.over) {
-                (Some(targets), true, over) => {
-                    pass.set_pipeline(if over {
-                        &pipelines.composite_over
-                    } else {
-                        &pipelines.composite
-                    });
+            match (&scene.half, scene.halved) {
+                (Some(targets), true) => {
+                    pass.set_pipeline(pipeline);
                     // Edges are traced again at full resolution, from the cones.
                     pass.set_bind_group(2, self.starts(scene), &[]);
                     pass.set_bind_group(3, &targets.bind_group, &[]);
                 }
-                (_, _, true) => {
-                    pass.set_pipeline(&pipelines.full_over);
-                    pass.set_bind_group(2, self.starts(scene), &[]);
-                }
+                (None, true) => continue,
                 _ => {
-                    pass.set_pipeline(&pipelines.full);
+                    pass.set_pipeline(pipeline);
                     pass.set_bind_group(2, self.starts(scene), &[]);
                 }
             }
@@ -1451,6 +1397,53 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
             pass.draw(0..3, 0..1);
         }
     }
+}
+
+/// The pipelines a scene is drawn with in a frame: with its rays started from `cones`, marched
+/// `offscreen` (at half resolution, `half`, or ahead), its pixels `carried` from the last frame,
+/// drawn `over` everything.
+fn drawn_with(cones: bool, offscreen: bool, carried: bool, half: bool, over: bool) -> Vec<Variant> {
+    let mut variants = Vec::new();
+    if cones {
+        variants.push(Variant::Coarse);
+    }
+    if offscreen {
+        if carried {
+            variants.extend([Variant::Carry, Variant::Tiles]);
+        } else {
+            variants.push(Variant::Half);
+        }
+        if half {
+            variants.extend([Variant::Classify, Variant::Finalize, Variant::Refine]);
+        }
+        variants.push(if over {
+            Variant::CompositeOver
+        } else {
+            Variant::Composite
+        });
+    } else {
+        variants.push(if over {
+            Variant::FullOver
+        } else {
+            Variant::Full
+        });
+    }
+    variants
+}
+
+/// The pipelines a scene `marched` as `settings` say is likely drawn with in its first frames:
+/// all it asks for, cones, half resolution, carrying, as it is now.
+fn likely(marched: &RayMarched, settings: &RayMarching) -> Vec<Variant> {
+    let half = marched.half_resolution.unwrap_or(settings.half_resolution);
+    let cones = marched.coarse > 0 && settings.metric.is_none();
+    let offscreen = half || marched.ahead;
+    let mut variants = drawn_with(cones, offscreen, false, half, marched.over);
+    if marched.ahead && !half && marched.interleave.max(marched.interleave_moving) > 1 {
+        variants.extend(drawn_with(cones, offscreen, true, half, marched.over));
+    }
+    variants.sort_by_key(|variant| *variant as usize);
+    variants.dedup();
+    variants
 }
 
 /// The greatest common divisor of `a` and `b`.
@@ -1827,6 +1820,37 @@ fn sdf_color(q: vec3<f32>) -> vec3<f32> {
     /// a pixel of the box's edge: whether the march catches that near miss, and on which face,
     /// depends on where its samples fall, plain steps from the cone or relaxed ones from the
     /// eye.
+    #[test]
+    fn a_renderer_after_another_compiles_nothing_again() {
+        let Some(gpu) = Gpu::headless() else {
+            eprintln!("no adapter, skipped");
+            return;
+        };
+        let first = draw(&gpu, false, 1.0);
+        // What was built ahead of need is done before counting.
+        let settled = || {
+            let mut counts = gpu.kept.counts();
+            for _ in 0..200 {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                let now = gpu.kept.counts();
+                if now == counts && now.1 == Variant::ALL.len() {
+                    break;
+                }
+                counts = now;
+            }
+            counts
+        };
+        let counts = settled();
+        assert_eq!(
+            counts,
+            (1, Variant::ALL.len()),
+            "one field, all its pipelines"
+        );
+        let again = draw(&gpu, false, 1.0);
+        assert_eq!(gpu.kept.counts(), counts, "nothing compiled again");
+        assert_eq!(first, again);
+    }
+
     #[test]
     fn cones_change_nothing_drawn() {
         let Some(gpu) = Gpu::headless() else {

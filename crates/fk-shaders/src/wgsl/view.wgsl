@@ -33,6 +33,8 @@ struct Disc {
     color: vec4<f32>,
     // Colour of the glow; w is the angle in radians over which it falls to 1/e.
     glow: vec4<f32>,
+    // x: a ring round it in its lines, its radius times the disc's; 0 for none.
+    ring: vec4<f32>,
 }
 
 // A point light. Its light falls off as the geometry's spheres grow (`geo_light_falloff`) and
@@ -81,6 +83,10 @@ struct Lighting {
     // The point lights nearest the eye; x of `point_count` says how many are used.
     point_lights: array<PointLight, 8>,
     point_count: vec4<f32>,
+    // More bodies in the sky, drawn as the sun and the moon are; x of `disc_count` says how
+    // many are used.
+    discs: array<Disc, 24>,
+    disc_count: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> view: View;

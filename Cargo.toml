@@ -48,6 +48,8 @@ directories = "6.0.0"
 tracing = "0.1.44"
 # The splash: an image in a window of its own while the app starts, put there by the CPU.
 softbuffer = "0.4.8"
+# Gamepads, polled by the runner into RawInput (on Linux through udev: libudev-dev to build).
+gilrs = "0.11.2"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 # S2: first pixel. naga and naga_oil move in lockstep with wgpu (naga_oil 0.23 is on naga 30).

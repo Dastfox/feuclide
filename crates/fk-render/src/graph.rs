@@ -13,7 +13,8 @@ use fk_scene::ActiveView;
 
 use crate::elsewhere::{Elsewhere, ElsewhereShared, ElsewhereTargets};
 use crate::frame::{
-    DiscBlock, LightingBlock, PointLightBlock, ViewBlock, WorldBlock, uniform_bytes,
+    DiscBlock, LightingBlock, MAX_SKY_DISCS, PointLightBlock, SkyDiscs, ViewBlock, WorldBlock,
+    uniform_bytes,
 };
 use crate::gpu::{Vec2f, Vec4f, matrix_columns};
 use crate::ink::InkPass;
@@ -24,7 +25,7 @@ use crate::overlay::{Overlay, OverlayPass};
 use crate::post::PostPass;
 use crate::renderer::{FrameBindings, FrameView, GeometryRenderer, RendererFactory, RendererSetup};
 use crate::screenshot::{self, Screenshots};
-use crate::seen::DiscProbe;
+use crate::seen::{DiscProbe, SeenProbe};
 use crate::settle::SettlePass;
 use crate::shadow::{SHADOW_FORMAT, ShadowMap, ShadowView};
 use crate::sky::SkyPass;
@@ -214,9 +215,15 @@ impl<G: GpuGeometry> RenderState<G> {
         samples: u32,
         factories: &[RendererFactory<G>],
     ) -> Result<Self, String> {
-        let instance = wgpu::Instance::new(
-            wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone())),
-        );
+        let mut descriptor =
+            wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone()));
+        // Shaders built with debug information only when asked for (`WGPU_DEBUG=1`): the driver
+        // leaves them unoptimised, and over a large distance field a frame then takes seconds
+        // and the window stops answering.
+        if std::env::var("WGPU_DEBUG").as_deref() != Ok("1") {
+            descriptor.flags.remove(wgpu::InstanceFlags::DEBUG);
+        }
+        let instance = wgpu::Instance::new(descriptor);
         let surface = instance
             .create_surface(window)
             .map_err(|error| format!("no surface: {error}"))?;
@@ -243,6 +250,7 @@ impl<G: GpuGeometry> RenderState<G> {
             device,
             queue,
             adapter: adapter.get_info(),
+            kept: Default::default(),
         };
         let capabilities = surface.get_capabilities(&adapter);
         let format = capabilities
@@ -560,7 +568,8 @@ impl<G: GpuGeometry> RenderState<G> {
         let elsewhere_drawn = match (&view, other.eye) {
             (Some(view), Some(eye)) => {
                 self.elsewhere.write(&self.gpu, other.flip);
-                self.draw_elsewhere(world, view, eye, &lighting, &shadows, size)
+                let seen_by = other.lighting.as_ref().unwrap_or(&lighting);
+                self.draw_elsewhere(world, view, eye, seen_by, &shadows, size)
             }
             _ => false,
         };
@@ -729,14 +738,24 @@ impl<G: GpuGeometry> RenderState<G> {
             }
         }
         self.timer.mark(&mut encoder, "opaque");
-        // How much of the sun and the moon the surfaces hide, before anything is laid over.
-        if view.is_some() {
+        // How much of the sun, the moon and the probe the surfaces hide, before anything is
+        // laid over.
+        if let Some(view) = &view {
             let lighting = &blocks.lighting;
+            let probe = world.get_resource::<SeenProbe>().and_then(|probe| {
+                let direction = in_eye_frame(view, &probe.direction?.try_normalize(1e-12)?);
+                let [x, y, z] = [direction.x, direction.y, direction.z].map(|c| c as f32);
+                Some(Vec4f([x, y, z, probe.radius.max(0.0) as f32]))
+            });
             self.discs.copy(
                 &mut encoder,
                 &targets.color,
                 blocks.view.proj_scale.0,
-                [&lighting.sun_disc, &lighting.moon_disc],
+                [
+                    Some(&lighting.sun_disc.direction),
+                    Some(&lighting.moon_disc.direction),
+                    probe.as_ref(),
+                ],
             );
         }
 
@@ -881,8 +900,8 @@ impl<G: GpuGeometry> RenderState<G> {
     }
 
     /// Draws the scene seen from `eye`, the [`Elsewhere`] eye, into its image and submits it:
-    /// the frame's camera, sky, light and shadows from there, its poses made relative to that
-    /// eye. Whether it was drawn.
+    /// the frame's camera and shadows from there under `lighting` (its own or the frame's), its
+    /// poses made relative to that eye. Whether it was drawn.
     fn draw_elsewhere(
         &mut self,
         world: &mut World,
@@ -1061,7 +1080,7 @@ pub(crate) fn frame_blocks<G: GpuGeometry>(
         Vec4f([c(0), c(1), c(2), w as f32])
     };
     let color = |c: Color| Vec4f(c.to_array());
-    let disc = |disc: &SkyDisc| DiscBlock {
+    let disc = |disc: &SkyDisc, ring: Real| DiscBlock {
         direction: in_eye(&disc.direction, disc.radius.max(0.0)),
         shape: {
             let (kind, points) = match disc.shape {
@@ -1078,6 +1097,7 @@ pub(crate) fn frame_blocks<G: GpuGeometry>(
         },
         color: color(disc.color),
         glow: Vec4f([disc.glow.r, disc.glow.g, disc.glow.b, disc.glow_size as f32]),
+        ring: Vec4f([ring.max(0.0) as f32, 0.0, 0.0, 0.0]),
     };
     let sky = &lighting.sky;
     // The stars' frame: the reference axes turned with the sky, carried to the eye, so the
@@ -1089,6 +1109,9 @@ pub(crate) fn frame_blocks<G: GpuGeometry>(
     let star_frame =
         [Vector3::x(), Vector3::y(), Vector3::z()].map(|axis| in_eye(&(star_turn * axis), 0.0));
     let (point_lights, point_count) = point_lights::<G>(world, view);
+    let extra = world
+        .get_resource::<SkyDiscs>()
+        .map_or(&[][..], |discs| &discs.0[..]);
     let lighting_block = LightingBlock {
         sun_direction: Vec4f::from_real(&G::embed_tangent(&origin, &carry(&lighting.sun))),
         sun_color: color(lighting.sun_color),
@@ -1098,8 +1121,8 @@ pub(crate) fn frame_blocks<G: GpuGeometry>(
         sky_below: color(sky.below),
         sky_up: in_eye(&sky.up, sky.gradient),
         star_frame,
-        sun_disc: disc(&sky.sun),
-        moon_disc: disc(&sky.moon),
+        sun_disc: disc(&sky.sun, 0.0),
+        moon_disc: disc(&sky.moon, 0.0),
         fog_density: lighting.fog_density as f32,
         bands: lighting.bands.max(1) as f32,
         stars: sky.stars.max(0.0) as f32,
@@ -1131,6 +1154,12 @@ pub(crate) fn frame_blocks<G: GpuGeometry>(
         ]),
         point_lights,
         point_count: Vec4f([point_count as f32, 0.0, 0.0, 0.0]),
+        discs: std::array::from_fn(|i| {
+            extra
+                .get(i)
+                .map_or_else(|| disc(&SkyDisc::default(), 0.0), |d| disc(&d.disc, d.ring))
+        }),
+        disc_count: Vec4f([extra.len().min(MAX_SKY_DISCS) as f32, 0.0, 0.0, 0.0]),
     };
 
     let values = world

@@ -91,13 +91,21 @@ fn disc_cover(disc: Disc, dir: vec3<f32>) -> f32 {
             d = length(p) - radius;
         }
     }
+    // The ring round it, in its lines.
+    if disc.ring.x > 0.0 {
+        d = min(d, abs(length(p) - radius * disc.ring.x) - 0.5 * stroke);
+    }
     return strength * (1.0 - smoothstep(-0.5 * px, 0.5 * px, d));
 }
 
 // What a far surface fades into when seen along `dir`: the gradient and the glows.
 fn sky_haze(dir: vec3<f32>) -> vec3<f32> {
-    return sky_gradient(dir) + disc_glow(lighting.sun_disc, dir)
+    var haze = sky_gradient(dir) + disc_glow(lighting.sun_disc, dir)
         + disc_glow(lighting.moon_disc, dir);
+    for (var i = 0u; i < u32(lighting.disc_count.x); i++) {
+        haze += disc_glow(lighting.discs[i], dir);
+    }
+    return haze;
 }
 
 fn hash3(p: vec3<f32>) -> vec3<f32> {
@@ -132,5 +140,9 @@ fn sky_color(dir: vec3<f32>) -> vec3<f32> {
     color += vec3<f32>(stars_along(dir) * lighting.stars * above);
     color = mix(color, lighting.moon_disc.color.rgb, disc_cover(lighting.moon_disc, dir) * above);
     color = mix(color, lighting.sun_disc.color.rgb, disc_cover(lighting.sun_disc, dir) * above);
+    for (var i = 0u; i < u32(lighting.disc_count.x); i++) {
+        let disc = lighting.discs[i];
+        color = mix(color, disc.color.rgb, disc_cover(disc, dir) * above);
+    }
     return color;
 }

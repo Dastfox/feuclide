@@ -15,9 +15,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      # kira's output (cpal) links ALSA on Linux; lavapipe (mesa-vulkan-drivers) is the GPU the
-      # headless render tests draw with.
-      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev mesa-vulkan-drivers
+      # kira's output (cpal) links ALSA on Linux and gilrs (the gamepads) udev; lavapipe
+      # (mesa-vulkan-drivers) is the GPU the headless render tests draw with.
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev mesa-vulkan-drivers
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace
@@ -34,8 +34,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      # `cargo publish` builds each crate from its package, fk-audio included.
-      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      # `cargo publish` builds each crate from its package, fk-audio and fk-app included.
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
       - run: python3 .github/scripts/publish-unreleased.py
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATESIO_TOKEN }}
