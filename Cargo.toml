@@ -3,6 +3,9 @@ resolver = "3"
 members = ["crates/*", "examples", "tools"]
 
 [workspace.package]
+# Only the unpublished members (fk-game, examples, tools) inherit this. Each published crate
+# sets its own version, and bumping it is what releases it: on main, CI publishes every
+# crate whose version is not on crates.io yet.
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.89"

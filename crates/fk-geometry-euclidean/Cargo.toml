@@ -1,12 +1,13 @@
 [package]
 name = "fk-geometry-euclidean"
 description = "Euclidean plane and space (E², E³) as Feuclide geometries"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 keywords = ["geometry", "euclidean", "gamedev", "isometry", "math"]
 categories = ["mathematics", "game-engines"]
 

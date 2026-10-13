@@ -1,12 +1,13 @@
 [package]
 name = "fk-shaders"
 description = "WGSL templates and per-geometry shader modules"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 keywords = ["wgsl", "shader", "wgpu", "naga", "graphics"]
 categories = ["rendering", "graphics"]
 

@@ -1,12 +1,13 @@
 [package]
 name = "fk-quotient"
 description = "Quotient and portal spaces: deck groups, fundamental domains, holonomy"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 keywords = ["quotient", "manifold", "portal", "holonomy", "topology"]
 categories = ["mathematics", "game-engines"]
 

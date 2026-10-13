@@ -1,12 +1,13 @@
 [package]
 name = "fk-geometry-spherical"
 description = "Spheres (S², S³) embedded in R³ and R⁴"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 keywords = ["spherical", "non-euclidean", "geometry", "hypersphere", "math"]
 categories = ["mathematics", "game-engines"]
 

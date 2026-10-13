@@ -1,12 +1,13 @@
 [package]
 name = "fk-math"
 description = "Raw numerics for Feuclide: number containers and numerically stable scalar functions, no geometry"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 keywords = ["math", "numerics", "minkowski", "hyperbolic", "geometry"]
 categories = ["mathematics", "science"]
 

@@ -1,12 +1,13 @@
 [package]
 name = "fk-assets"
 description = "Mesh loading, embedding into curved spaces, geodesic refinement"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 keywords = ["gltf", "mesh", "assets", "gamedev", "geodesic"]
 categories = ["game-development", "graphics"]
 

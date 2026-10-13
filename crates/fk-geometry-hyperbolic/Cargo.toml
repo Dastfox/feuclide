@@ -1,12 +1,13 @@
 [package]
 name = "fk-geometry-hyperbolic"
 description = "Hyperbolic plane and space (H², H³) in the hyperboloid model"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 keywords = ["hyperbolic", "non-euclidean", "geometry", "hyperboloid", "math"]
 categories = ["mathematics", "game-engines"]
 

@@ -1,12 +1,13 @@
 [package]
 name = "fk-physics"
 description = "Curved-space physics: geodesic motion, collision, rigid bodies on Lie groups"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 keywords = ["physics", "geodesic", "collision", "rigid-body", "non-euclidean"]
 categories = ["simulation", "game-engines", "mathematics"]
 

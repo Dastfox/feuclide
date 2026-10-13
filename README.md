@@ -12,21 +12,19 @@ behind one renderer and share one depth buffer.
 It is built on `bevy_ecs`, `wgpu` and `winit`, but it is not a Bevy plugin: it uses no Bevy
 transform or render crates, since `Mat4` and `GlobalTransform` are exactly what it avoids.
 
-## Showcase: 
+## Showcase:
 
 ### h3
+
 <img width="480" height="270" alt="fly-h3" src="https://github.com/user-attachments/assets/0fcde3a2-460e-449e-8723-69b73edbfbec" />
 
 ### Lens space
+
 <img width="480" height="270" alt="lens-space" src="https://github.com/user-attachments/assets/f0d0fc9e-166e-43b7-ab5a-772f015f10f1" />
 
 ### seifert weber
+
 <img width="480" height="270" alt="seifert-weber" src="https://github.com/user-attachments/assets/6b28839b-861b-4bb1-9381-5f86fa781ab5" />
-
-
-
-
-
 
 ## Run the examples
 
@@ -47,24 +45,26 @@ seconds, default 3). `FK_NO_VSYNC=1` lifts the refresh cap.
 
 ## Crates
 
-| Crate | What |
-|---|---|
-| [`fk-math`](https://crates.io/crates/fk-math) | f64 numerics, numerically stable series (`sinc`, `sinhc`, …), Minkowski helpers |
-| [`fk-geometry`](https://crates.io/crates/fk-geometry) | The core traits: `Geometry`, `GroupElement`, `VectorSpace`, `SampledMetric`, `GpuGeometry`, and a property-test battery |
-| [`fk-geometry-euclidean`](https://crates.io/crates/fk-geometry-euclidean) | E², E³ |
-| [`fk-geometry-hyperbolic`](https://crates.io/crates/fk-geometry-hyperbolic) | H², H³ in the hyperboloid model |
-| [`fk-geometry-spherical`](https://crates.io/crates/fk-geometry-spherical) | S², S³ |
-| [`fk-quotient`](https://crates.io/crates/fk-quotient) | Quotient and portal spaces: deck groups, Dirichlet domains, holonomy |
-| [`fk-app`](https://crates.io/crates/fk-app) | App, plugins, schedules, window, input and key mapping |
-| [`fk-scene`](https://crates.io/crates/fk-scene) | Poses as isometries, hierarchy, cameras, floating origin |
-| [`fk-shaders`](https://crates.io/crates/fk-shaders) | WGSL modules, one per geometry |
-| [`fk-render`](https://crates.io/crates/fk-render) | wgpu renderer: metric-aware rasterization and geodesic ray marching in one depth buffer, post effects |
-| [`fk-physics`](https://crates.io/crates/fk-physics) | Geodesic motion, a character controller, collision, rigid bodies on Lie groups |
-| [`fk-assets`](https://crates.io/crates/fk-assets) | Meshes embedded into curved space, glTF, geodesic refinement, regular tilings |
-| [`fk-audio`](https://crates.io/crates/fk-audio) | Sound (kira), silent without a device |
-| [`feuclide`](https://crates.io/crates/feuclide) | Umbrella crate |
-| `fk-game` | The showcase tour |
-| `tools` (`fk-tools`) | Golden images (raster against ray march), mesh refinement |
+Each crate under `crates/` has a README of its own, which is also its crates.io page.
+
+| Crate | What | Bevy counterpart | What's different |
+| --- | --- | --- | --- |
+| [`fk-math`](https://crates.io/crates/fk-math) | f64 numerics, numerically stable series (`sinc`, `sinhc`, …), Minkowski helpers | `bevy_math` (on glam) | nalgebra in `f64`; `f32` only at the GPU boundary. Adds stable series for the exp/log maps. No shapes or geometry here: it's numbers only. |
+| [`fk-geometry`](https://crates.io/crates/fk-geometry) | The core traits: `Geometry`, `GroupElement`, `VectorSpace`, `SampledMetric`, `GpuGeometry`, and a property-test battery | **None.** The closest is `bevy_transform`'s `Transform` with `bevy_math`'s `Isometry3d` | The heart of Feuclide. Bevy hard-codes flat space (`Vec3` + `Quat` + scale). Here a space is a trait: points, tangents, isometry group, exp/log, parallel transport. E³, H³ and S³ are interchangeable implementations, checked by one property test suite. |
+| [`fk-geometry-euclidean`](https://crates.io/crates/fk-geometry-euclidean) | E², E³ | **None as a crate:** flat space is what all of Bevy assumes | Flat space is a leaf the application picks, not a foundation: swap it for H³ or S³ and everything above runs unchanged. |
+| [`fk-geometry-hyperbolic`](https://crates.io/crates/fk-geometry-hyperbolic) | H², H³ in the hyperboloid model | **None.** | Bevy has no notion of curved space. |
+| [`fk-geometry-spherical`](https://crates.io/crates/fk-geometry-spherical) | S², S³ | **None.** | Bevy has no notion of curved space. |
+| [`fk-quotient`](https://crates.io/crates/fk-quotient) | Quotient and portal spaces: deck groups, Dirichlet domains, holonomy | **None.** | Quotient spaces (flat tori, closed hyperbolic and spherical manifolds), where leaving one side brings you back in another; also portals. Bevy has no notion of this. |
+| [`fk-app`](https://crates.io/crates/fk-app) | App, plugins, schedules, window, input and key mapping | `bevy_app` + `bevy_window` + `bevy_winit` + `bevy_input` + `bevy_time` | Same App/Plugin/schedules model, slimmed down. It adds a key mapper with player rebinding (Bevy leaves that to third-party crates like leafwing), a fixed step, and handing the window over to a second app built on a thread. |
+| [`fk-scene`](https://crates.io/crates/fk-scene) | Poses as isometries, hierarchy, cameras, floating origin | `bevy_transform` + `bevy_camera` | `Pose` / `GlobalPose` replace `Transform` / `GlobalTransform`. They are isometries composed down the hierarchy, with no scale. Everything is made camera-relative before reaching the GPU. The hierarchy itself is `bevy_ecs`'s own `ChildOf`, shared rather than replaced. |
+| [`fk-shaders`](https://crates.io/crates/fk-shaders) | WGSL modules, one per geometry | `bevy_shader` | Both compose WGSL with **naga_oil**, which is itself a Bevy-org crate. The difference: one geometry module per space (`fk::geometry`), and the game supplies its own world uniforms, SDF and deform hooks. |
+| [`fk-render`](https://crates.io/crates/fk-render) | wgpu renderer: metric-aware rasterization and geodesic ray marching in one depth buffer, post effects | `bevy_render` + `bevy_core_pipeline` + `bevy_pbr` + `bevy_light` + `bevy_post_process` + `bevy_anti_alias` | Raw wgpu with a small fixed render graph instead of Bevy's extensible one. Rasterization works in any geometry. It adds a **geodesic ray marcher** that shares the depth buffer with the raster path; Bevy has nothing like it. Its frame accumulation (`Settle`) is roughly Bevy's TAA. Post effects (ink, datamosh, warp) have no Bevy equivalent. |
+| [`fk-physics`](https://crates.io/crates/fk-physics) | Geodesic motion, a character controller, collision, rigid bodies on Lie groups | **None in Bevy.** The equivalents are third-party: Avian, Rapier | Rigid bodies integrated on the Lie group itself, so the same code runs in E³, H³ and S³. Also a character controller and collision against distance fields. |
+| [`fk-assets`](https://crates.io/crates/fk-assets) | Meshes embedded into curved space, glTF, geodesic refinement, regular tilings | `bevy_gltf` + a little of `bevy_asset` | Synchronous glTF loading only, with no asset server or handles. It adds embedding a flat mesh into curved space and geodesic refinement, so long edges don't sag. |
+| [`fk-audio`](https://crates.io/crates/fk-audio) | Sound (kira), silent without a device | `bevy_audio` (on rodio) | Built on kira, like the third-party `bevy_kira_audio`. Adds reverb rooms, directional emitters and gliding voices, and stays silent without an audio device. |
+| [`feuclide`](https://crates.io/crates/feuclide) | Umbrella crate | `bevy` / `bevy_internal` | Same idea: an umbrella crate that re-exports the others. |
+| `fk-game` | The showcase tour | Bevy's `examples/` and showcase | A guided tour on rails through every space the engine draws. |
+| `tools` (`fk-tools`) | Golden images (raster against ray march), mesh refinement | **None.** | Offline checks and asset preparation for this engine's own paths. |
 
 The layering is enforced by the dependency graph: `fk-app`, `fk-scene`, `fk-render` and
 `fk-physics` depend on `fk-geometry` and never name a concrete geometry; the concrete geometries

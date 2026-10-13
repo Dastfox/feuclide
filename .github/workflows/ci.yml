@@ -21,3 +21,21 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace
+
+  # Releasing a crate is bumping its version. On main, once the checks pass, every crate whose
+  # version is not on crates.io yet is published, dependencies first; the others are skipped.
+  publish:
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # `cargo publish` builds each crate from its package, fk-audio included.
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: python3 .github/scripts/publish-unreleased.py
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATESIO_TOKEN }}

@@ -1,12 +1,13 @@
 [package]
 name = "fk-audio"
 description = "Sound: decoded clips played as voices whose gain and rate glide, silent without a device"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 keywords = ["audio", "sound", "gamedev", "kira", "spatial-audio"]
 categories = ["multimedia::audio", "game-development"]
 

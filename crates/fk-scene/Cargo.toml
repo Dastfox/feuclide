@@ -1,12 +1,13 @@
 [package]
 name = "fk-scene"
 description = "ECS components and schedules: poses as isometries, hierarchy, cameras"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 keywords = ["gamedev", "game-engine", "ecs", "scene-graph", "isometry"]
 categories = ["game-engines"]
 
