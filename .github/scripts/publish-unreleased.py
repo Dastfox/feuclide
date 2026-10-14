@@ -5,9 +5,10 @@ Releasing a crate is bumping its `version`; a crate whose version is already pub
 skipped, so a push that bumps nothing publishes nothing. `cargo publish` waits until a crate
 is in the index before returning, so the crates depending on it resolve against it next.
 
-    publish-unreleased.py [--dry-run]
+    publish-unreleased.py [--dry-run | --list]
 
-Needs CARGO_REGISTRY_TOKEN unless --dry-run.
+--list prints `name version` for each crate it would publish, and nothing else (the
+changelog's pre-push hook reads it). Needs CARGO_REGISTRY_TOKEN unless --dry-run or --list.
 """
 
 import json
@@ -53,7 +54,8 @@ def dependency_order(crates):
 
 
 def main():
-    dry_run = "--dry-run" in sys.argv[1:]
+    list_only = "--list" in sys.argv[1:]
+    dry_run = list_only or "--dry-run" in sys.argv[1:]
     metadata = json.loads(
         subprocess.check_output(["cargo", "metadata", "--format-version", "1", "--no-deps"])
     )
@@ -63,9 +65,10 @@ def main():
     for name in dependency_order(crates):
         version = crates[name]["version"]
         if published(name, version):
-            print(f"{name} {version}: already on crates.io")
+            if not list_only:
+                print(f"{name} {version}: already on crates.io")
             continue
-        print(f"{name} {version}: publishing", flush=True)
+        print(f"{name} {version}" if list_only else f"{name} {version}: publishing", flush=True)
         if not dry_run:
             subprocess.run(["cargo", "publish", "--locked", "-p", name], check=True)
 

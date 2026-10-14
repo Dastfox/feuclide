@@ -1,7 +1,7 @@
 [package]
 name = "fk-math"
 description = "Raw numerics for Feuclide: number containers and numerically stable scalar functions, no geometry"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

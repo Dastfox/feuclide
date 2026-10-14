@@ -59,15 +59,15 @@ Each crate under `crates/` has a README of its own, which is also its crates.io 
 | [`fk-scene`](https://crates.io/crates/fk-scene) | Poses as isometries, hierarchy, cameras, floating origin | `bevy_transform` + `bevy_camera` | `Pose` / `GlobalPose` replace `Transform` / `GlobalTransform`. They are isometries composed down the hierarchy, with no scale. Everything is made camera-relative before reaching the GPU. The hierarchy itself is `bevy_ecs`'s own `ChildOf`, shared rather than replaced. |
 | [`fk-shaders`](https://crates.io/crates/fk-shaders) | WGSL modules, one per geometry | `bevy_shader` | Both compose WGSL with **naga_oil**, which is itself a Bevy-org crate. The difference: one geometry module per space (`fk::geometry`), and the game supplies its own world uniforms, SDF, deform, post-pass (`fk::grade`) and sky-figure hooks, or skeletons of its own. |
 | [`fk-render`](https://crates.io/crates/fk-render) | wgpu renderer: metric-aware rasterization and geodesic ray marching in one depth buffer, post effects | `bevy_render` + `bevy_core_pipeline` + `bevy_pbr` + `bevy_light` + `bevy_post_process` + `bevy_anti_alias` | Raw wgpu with a small fixed render graph instead of Bevy's extensible one. Rasterization works in any geometry. It adds a **geodesic ray marcher** that shares the depth buffer with the raster path; Bevy has nothing like it. Its frame accumulation (`Settle`) is roughly Bevy's TAA. Games add fullscreen passes of their own (`ImageEffect`, like a post-processing node) and effects inside the post pass (`GradeShader`). |
-| `fk-sky` | The day and the night: a clock, the sun's and the moon's paths, the colours of every hour | **None in Bevy itself**; atmosphere and sun plugins | A time-of-day plugin writing `fk-render`'s `Lighting`, tuned in a TOML file. Unreleased yet. |
-| `fk-ui` | What an app draws over the image: the frame rate, key lists, a pointer, a console's core, menu pages, CPU text | `bevy_dev_tools`' FPS overlay, `bevy_console`, `bevy_ui` | A model of menus the app draws, and readouts in `fk-render`'s text panel. Unreleased yet. |
-| `fk-flat` | Flat (E³) worlds: standing on a ground, free spots, merged scenery, swaying kits, height-field land, a first-person body | Terrain and first-person controller crates | The one engine crate that names its geometry: a leaf an application picks, like the geometry crates. Unreleased yet. |
+| [`fk-sky`](https://crates.io/crates/fk-sky) | The day and the night: a clock, the sun's and the moon's paths, the colours of every hour | **None in Bevy itself**; atmosphere and sun plugins | A time-of-day plugin writing `fk-render`'s `Lighting`, tuned in a TOML file. Unreleased yet. |
+| [`fk-ui`](https://crates.io/crates/fk-ui) | What an app draws over the image: the frame rate, key lists, a pointer, a console's core, menu pages, CPU text | `bevy_dev_tools`' FPS overlay, `bevy_console`, `bevy_ui` | A model of menus the app draws, and readouts in `fk-render`'s text panel. Unreleased yet. |
+| [`fk-flat`](https://crates.io/crates/fk-flat) | Flat (E³) worlds: standing on a ground, free spots, merged scenery, swaying kits, height-field land, a first-person body | Terrain and first-person controller crates | The one engine crate that names its geometry: a leaf an application picks, like the geometry crates. Unreleased yet. |
 | [`fk-physics`](https://crates.io/crates/fk-physics) | Geodesic motion, a character controller, collision, rigid bodies on Lie groups | **None in Bevy.** The equivalents are third-party: Avian, Rapier | Rigid bodies integrated on the Lie group itself, so the same code runs in E³, H³ and S³. Also a character controller and collision against distance fields. |
 | [`fk-assets`](https://crates.io/crates/fk-assets) | Meshes embedded into curved space, glTF, geodesic refinement, regular tilings | `bevy_gltf` + a little of `bevy_asset` | Synchronous glTF loading only, with no asset server or handles. It adds embedding a flat mesh into curved space and geodesic refinement, so long edges don't sag. |
 | [`fk-audio`](https://crates.io/crates/fk-audio) | Sound (kira), silent without a device | `bevy_audio` (on rodio) | Built on kira, like the third-party `bevy_kira_audio`. Adds reverb rooms, directional emitters and gliding voices, and stays silent without an audio device. |
 | [`feuclide`](https://crates.io/crates/feuclide) | Umbrella crate | `bevy` / `bevy_internal` | Same idea: an umbrella crate that re-exports the others. |
-| `fk-game` | The showcase tour | Bevy's `examples/` and showcase | A guided tour on rails through every space the engine draws. |
-| `tools` (`fk-tools`) | Golden images (raster against ray march), mesh refinement | **None.** | Offline checks and asset preparation for this engine's own paths. |
+| [`fk-game`](https://github.com/Dastfox/feuclide/tree/main/crates/fk-game) | The showcase tour | Bevy's `examples/` and showcase | A guided tour on rails through every space the engine draws. |
+| [`tools`](https://github.com/Dastfox/feuclide/tree/main/tools) (`fk-tools`) | Golden images (raster against ray march), mesh refinement | **None.** | Offline checks and asset preparation for this engine's own paths. |
 
 The layering is enforced by the dependency graph: `fk-app`, `fk-scene`, `fk-render` and
 `fk-physics` depend on `fk-geometry` and never name a concrete geometry; the concrete geometries
@@ -107,6 +107,17 @@ cargo test --workspace
 
 On Linux, sound needs ALSA (`libasound2-dev`); the headless render tests draw with lavapipe
 (`mesa-vulkan-drivers`) and are skipped without an adapter.
+
+Every commit adds a line to [CHANGELOG.md](CHANGELOG.md), under Unreleased; CI refuses a push
+whose commits don't. Turn on the hooks that check it as you commit, and file the lines under
+their release as you push to `main`, once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+A crate is released by bumping its `version`: on `main`, CI publishes every crate whose version
+is not on crates.io yet.
 
 ## License
 

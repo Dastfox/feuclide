@@ -1,15 +1,13 @@
 [package]
 name = "fk-sky"
 description = "The day and the night: a clock, the sun's and the moon's paths, the colours of every hour"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
-# Unreleased until its version is bumped and this line removed.
-publish = false
 
 [dependencies]
 fk-math.workspace = true

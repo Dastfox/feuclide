@@ -22,10 +22,23 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace
 
+  # Every commit adds a line to CHANGELOG.md. The pre-commit hook in .githooks checks it as
+  # the commit is made; this catches the commits made without it.
+  changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python3 .github/scripts/changelog.py check-range "$BASE" "$HEAD"
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
   # Releasing a crate is bumping its version. On main, once the checks pass, every crate whose
   # version is not on crates.io yet is published, dependencies first; the others are skipped.
   publish:
-    needs: check
+    needs: [check, changelog]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency:

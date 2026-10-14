@@ -1,0 +1,23 @@
+#!/bin/sh
+# A push to main that releases crates (versions crates.io does not have yet) first moves the
+# changelog's Unreleased lines under a heading naming the date and those crates, amends the
+# last commit with it and stops the push: push again to send the amended commit.
+while read -r local_ref local_sha remote_ref remote_sha; do
+	[ "$remote_ref" = refs/heads/main ] || continue
+	if [ "$local_sha" != "$(git rev-parse HEAD)" ]; then
+		echo "pre-push: main is not checked out, its changelog is left as is" >&2
+		continue
+	fi
+	if ! git diff --quiet HEAD -- CHANGELOG.md; then
+		echo "pre-push: CHANGELOG.md has uncommitted changes; commit or stash them first" >&2
+		exit 1
+	fi
+	python3 .github/scripts/changelog.py release || exit 1
+	if ! git diff --quiet -- CHANGELOG.md; then
+		git commit --quiet --amend --no-edit --no-verify -- CHANGELOG.md || exit 1
+		echo "pre-push: the release's changelog lines are under today's heading, amended into" \
+			"$(git log -1 --format='%h %s'). Push again." >&2
+		exit 1
+	fi
+done
+exit 0

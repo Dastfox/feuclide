@@ -21,22 +21,22 @@ categories = ["game-engines", "graphics", "mathematics"]
 # concrete geometry crate. Concrete geometries are leaves chosen by the application.
 # The version on each path dependency is what crates.io resolves against; the path is what
 # the workspace builds against. Both are required to publish.
-fk-math = { path = "crates/fk-math", version = "0.1.0" }
+fk-math = { path = "crates/fk-math", version = "0.1.2" }
 fk-geometry = { path = "crates/fk-geometry", version = "0.1.0" }
 fk-geometry-euclidean = { path = "crates/fk-geometry-euclidean", version = "0.1.0" }
 fk-geometry-hyperbolic = { path = "crates/fk-geometry-hyperbolic", version = "0.1.0" }
 fk-geometry-spherical = { path = "crates/fk-geometry-spherical", version = "0.1.0" }
-fk-quotient = { path = "crates/fk-quotient", version = "0.1.0" }
-fk-scene = { path = "crates/fk-scene", version = "0.1.0" }
-fk-shaders = { path = "crates/fk-shaders", version = "0.1.0" }
-fk-render = { path = "crates/fk-render", version = "0.1.0" }
-fk-physics = { path = "crates/fk-physics", version = "0.1.0" }
-fk-assets = { path = "crates/fk-assets", version = "0.1.0" }
-fk-app = { path = "crates/fk-app", version = "0.1.0" }
-fk-audio = { path = "crates/fk-audio", version = "0.1.0" }
-fk-sky = { path = "crates/fk-sky", version = "0.1.0" }
-fk-ui = { path = "crates/fk-ui", version = "0.1.0" }
-fk-flat = { path = "crates/fk-flat", version = "0.1.0" }
+fk-quotient = { path = "crates/fk-quotient", version = "0.2.0" }
+fk-scene = { path = "crates/fk-scene", version = "0.2.0" }
+fk-shaders = { path = "crates/fk-shaders", version = "0.1.2" }
+fk-render = { path = "crates/fk-render", version = "0.2.0" }
+fk-physics = { path = "crates/fk-physics", version = "0.2.0" }
+fk-assets = { path = "crates/fk-assets", version = "0.2.0" }
+fk-app = { path = "crates/fk-app", version = "0.2.0" }
+fk-audio = { path = "crates/fk-audio", version = "0.2.0" }
+fk-sky = { path = "crates/fk-sky", version = "0.2.0" }
+fk-ui = { path = "crates/fk-ui", version = "0.2.0" }
+fk-flat = { path = "crates/fk-flat", version = "0.2.0" }
 
 nalgebra = "0.35"
 proptest = "1.11"

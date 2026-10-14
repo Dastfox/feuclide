@@ -1,0 +1,9 @@
+#!/bin/sh
+# Every commit adds a line to CHANGELOG.md, under Unreleased. Turned on per clone with
+# `git config core.hooksPath .githooks`; CI checks the same of every pushed commit.
+[ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ] && exit 0
+# Amending compares with the parent of the commit being replaced.
+case "$(ps -o args= -p "$PPID" 2>/dev/null)" in
+*--amend*) exec python3 .github/scripts/changelog.py check-staged --amend ;;
+*) exec python3 .github/scripts/changelog.py check-staged ;;
+esac

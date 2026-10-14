@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "feuclide"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "fk-app",
  "fk-audio",
@@ -1000,7 +1000,7 @@ checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 
 [[package]]
 name = "fk-app"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "bevy_ecs",
  "directories",
@@ -1018,7 +1018,7 @@ dependencies = [
 
 [[package]]
 name = "fk-assets"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "fk-geometry",
  "fk-geometry-euclidean",
@@ -1032,7 +1032,7 @@ dependencies = [
 
 [[package]]
 name = "fk-audio"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "bevy_ecs",
  "fk-app",
@@ -1045,7 +1045,7 @@ dependencies = [
 
 [[package]]
 name = "fk-flat"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fk-geometry",
  "fk-geometry-euclidean",
@@ -1110,14 +1110,14 @@ dependencies = [
 
 [[package]]
 name = "fk-math"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "nalgebra",
 ]
 
 [[package]]
 name = "fk-physics"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "fk-geometry",
  "fk-geometry-euclidean",
@@ -1130,7 +1130,7 @@ dependencies = [
 
 [[package]]
 name = "fk-quotient"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "fk-geometry",
  "fk-geometry-euclidean",
@@ -1141,7 +1141,7 @@ dependencies = [
 
 [[package]]
 name = "fk-render"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "bevy_ecs",
  "bytemuck",
@@ -1166,7 +1166,7 @@ dependencies = [
 
 [[package]]
 name = "fk-scene"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "bevy_ecs",
  "fk-app",
@@ -1178,7 +1178,7 @@ dependencies = [
 
 [[package]]
 name = "fk-shaders"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "naga",
  "naga_oil",
@@ -1186,7 +1186,7 @@ dependencies = [
 
 [[package]]
 name = "fk-sky"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_ecs",
  "fk-app",
@@ -1214,7 +1214,7 @@ dependencies = [
 
 [[package]]
 name = "fk-ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ab_glyph",
  "bevy_ecs",
