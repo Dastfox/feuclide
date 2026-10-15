@@ -1,6 +1,6 @@
 //! The render graph: surface, targets and the fixed pass order
 //! (the other eye's image, when there is one) → visibility → opaque → layer (while it is
-//! enabled) → settle → the caller's image effects → post → UI.
+//! enabled) → settle → the caller's image effects → late (when anything is) → post → UI.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -21,6 +21,7 @@ use crate::frame::{
     uniform_bytes,
 };
 use crate::gpu::{Vec2f, Vec4f, matrix_columns};
+use crate::late::DepthResolve;
 use crate::light::{MAX_POINT_LIGHTS, PointLight};
 use crate::mesh::tangent;
 use crate::overlay::{Overlay, OverlayPass};
@@ -90,6 +91,15 @@ struct Targets {
     layer: LayerTargets,
     /// The other eye's image, read by the windows onto it.
     elsewhere: ElsewhereTargets,
+    /// The late pass's depth when the opaque pass is multisampled: its depth resolved to one
+    /// sample, and what reads it.
+    late: Option<LateTargets>,
+}
+
+/// The depth the late pass tests against when the opaque pass is multisampled.
+struct LateTargets {
+    depth: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
 }
 
 /// The layer render's own colour and depth, the opaque pass's formats and sample count.
@@ -123,6 +133,8 @@ pub(crate) struct RenderState<G: GpuGeometry> {
     settle: SettlePass,
     /// The caller's image effects, in the order they run.
     effects: Vec<Box<dyn ImageEffect>>,
+    /// Resolves the depth for the late pass, when the opaque pass is multisampled.
+    late: Option<DepthResolve>,
     post: PostPass,
     overlay: OverlayPass,
     elsewhere: ElsewhereShared,
@@ -397,6 +409,7 @@ impl<G: GpuGeometry> RenderState<G> {
             sample_count > 1,
             (additions.grade, additions.figure),
         );
+        let late = (sample_count > 1).then(|| DepthResolve::new(&gpu.device, DEPTH_FORMAT));
         let overlay = OverlayPass::new(&gpu, format);
         let discs = DiscProbe::new(&gpu);
         let timer = GpuTimer::new(&gpu, crate::perf::enabled());
@@ -414,6 +427,7 @@ impl<G: GpuGeometry> RenderState<G> {
             shadow_map,
             settle,
             effects,
+            late,
             post,
             overlay,
             elsewhere,
@@ -534,6 +548,16 @@ impl<G: GpuGeometry> RenderState<G> {
         }
         self.post
             .set_targets(&self.gpu, &color, &depth, &layer.color);
+        let late = self.late.as_ref().map(|resolve| LateTargets {
+            depth: target(
+                "fk late depth",
+                DEPTH_FORMAT,
+                1,
+                wgpu::TextureUsages::empty(),
+            )
+            .create_view(&Default::default()),
+            bind_group: resolve.bind(&self.gpu.device, &depth),
+        });
         let targets = Targets {
             color_view: color.create_view(&Default::default()),
             color,
@@ -541,6 +565,7 @@ impl<G: GpuGeometry> RenderState<G> {
             depth,
             layer,
             elsewhere,
+            late,
         };
         self.targets = Some(targets);
         self.reconfigure = false;
@@ -828,6 +853,48 @@ impl<G: GpuGeometry> RenderState<G> {
             effect.render(&mut encoder, &effect_targets, &self.frame.bind_group);
             self.timer.mark(&mut encoder, effect.label());
         }
+
+        // Late: what is drawn over the image as the effects left it, against the depth as the
+        // opaque pass left it, one sample.
+        if view.is_some() && self.renderers.iter().any(|renderer| renderer.has_late()) {
+            let depth = match (&self.late, &targets.late) {
+                (Some(resolve), Some(late)) => {
+                    resolve.resolve(&mut encoder, &late.bind_group, &late.depth);
+                    &late.depth
+                }
+                _ => &targets.depth,
+            };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("fk late"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &targets.color_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            let bindings = FrameBindings {
+                frame: &self.frame.bind_group,
+                shadows: &self.shadow_map.bind_group,
+                elsewhere: elsewhere_drawn.then_some(&targets.elsewhere.bind_group),
+            };
+            for renderer in &self.renderers {
+                renderer.render_late(&mut pass, &bindings);
+            }
+        }
+        self.timer.mark(&mut encoder, "late");
 
         // Post.
         self.post.capture(&mut encoder, &targets.color, capture);

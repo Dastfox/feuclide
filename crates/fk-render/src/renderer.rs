@@ -98,7 +98,8 @@ pub struct FrameBindings<'a> {
 /// [`FrameView::shadow`] is set, [`encode`](Self::encode) for every renderer, then
 /// [`render`](Self::render) for every renderer inside one opaque pass, on frames that show the
 /// [`LayerRender`](crate::LayerRender) [`render_layer`](Self::render_layer) for every renderer
-/// inside the layer pass, then the post pass.
+/// inside the layer pass, after the image effects [`render_late`](Self::render_late) for every
+/// renderer inside the late pass when any [`has_late`](Self::has_late), then the post pass.
 pub trait GeometryRenderer<G: GpuGeometry>: Send + Sync + 'static {
     /// Reads what this frame draws from the world and uploads whatever does not depend on
     /// visibility.
@@ -134,6 +135,21 @@ pub trait GeometryRenderer<G: GpuGeometry>: Send + Sync + 'static {
     /// the opaque pass's formats and sample count, cleared to the layer's colour, after the
     /// opaque pass. Only called on frames that show the layer. Draws nothing by default.
     fn render_layer(&self, pass: &mut wgpu::RenderPass<'_>, bindings: &FrameBindings<'_>) {
+        let _ = (pass, bindings);
+    }
+
+    /// Whether it has anything to draw late this frame ([`render_late`](Self::render_late)).
+    /// Nothing by default.
+    fn has_late(&self) -> bool {
+        false
+    }
+
+    /// Records the draws of what is drawn after the image effects
+    /// ([`RayMarched::late`](crate::RayMarched)): a pass over the image as the effects left
+    /// it, one sample, with the depth as the opaque pass left it (resolved to one sample when
+    /// it is multisampled), both loaded and kept. Only called on frames some renderer
+    /// [`has_late`](Self::has_late). Draws nothing by default.
+    fn render_late(&self, pass: &mut wgpu::RenderPass<'_>, bindings: &FrameBindings<'_>) {
         let _ = (pass, bindings);
     }
 

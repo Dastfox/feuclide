@@ -9,6 +9,9 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 
 ## Unreleased
 
+- fk-render: `RayMarched::late`, a scene drawn after the image effects, over the image as they
+  left it, against the opaque depth (resolved to one sample when multisampled).
+
 ## 2026-10-14
 
 fk-math 0.1.2, fk-shaders 0.1.2, fk-app 0.2.0, fk-scene 0.2.0, fk-quotient 0.2.0, fk-render 0.2.0,

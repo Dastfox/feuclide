@@ -230,6 +230,35 @@ impl<G: GpuGeometry> Offscreen<G> {
                 renderer.render(&mut pass, &bindings);
             }
         }
+        // What is drawn late: over the image, against its depth, one sample here.
+        if renderers.iter().any(|renderer| renderer.has_late()) {
+            let color = self.color.create_view(&Default::default());
+            let depth = self.depth.create_view(&Default::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("fk offscreen late"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            for renderer in &renderers {
+                renderer.render_late(&mut pass, &bindings);
+            }
+        }
         gpu.queue.submit([encoder.finish()]);
         let rgba = crate::screenshot::read_back(gpu, &self.color, 4, "offscreen image")
             .expect("the offscreen image reads back");

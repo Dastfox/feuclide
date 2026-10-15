@@ -29,7 +29,8 @@
 //!    [`OnLayer`], over a flat colour.
 //! 4. **Image effects.** The [`Settle`] when on, then the caller's [`ImageEffect`]s in order
 //!    ([`add_image_effect`]): fullscreen passes of its own that rewrite the image (an inked
-//!    look, a datamosh, a crossfade through a [`CarriedImage`]).
+//!    look, a datamosh, a crossfade through a [`CarriedImage`]). Then what is drawn late
+//!    ([`RayMarched::late`]), over the image as they left it, against the opaque depth.
 //! 5. **Post.** A fullscreen pass to the window. [`PostSettings`] selects the image or the
 //!    depth buffer decoded to distance, and composes the image's effects (blur, saturation,
 //!    vignette) with the caller's, a [`GradeShader`] reading its [`GradeValues`], the
@@ -61,6 +62,7 @@ mod fields;
 mod frame;
 mod gpu;
 mod graph;
+mod late;
 pub mod light;
 mod march;
 mod mesh;

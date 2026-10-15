@@ -391,6 +391,14 @@ pub struct RayMarched {
     /// across instead of [`interleave`](Self::interleave): fewer carried, so sharper as it
     /// turns, and dearer. 0, the same as `interleave`.
     pub interleave_moving: u32,
+    /// Whether it is drawn after the image effects, over the image as they left it, instead
+    /// of in the opaque pass: for what must be laid over an image an effect has already
+    /// worked on. It is depth-tested against the depth as the opaque pass left it (whatever
+    /// [`over`](Self::over) says) and writes its own, at full resolution, one sample, never
+    /// [`ahead`](Self::ahead) nor interleaved; the effects never see it, nor the settling, nor
+    /// the layer render. In the [`Elsewhere`](crate::Elsewhere) eye's image, which no effect
+    /// works on, it is drawn as the others.
+    pub late: bool,
 }
 
 impl RayMarched {
@@ -411,6 +419,7 @@ impl RayMarched {
             ahead: false,
             interleave: 1,
             interleave_moving: 0,
+            late: false,
         }
     }
 }
@@ -584,6 +593,8 @@ struct Scene {
     layer: bool,
     /// Drawn over everything, the depth test passed whatever is there.
     over: bool,
+    /// Drawn after the image effects ([`RayMarched::late`]), not in the opaque pass.
+    late: bool,
 }
 
 type Marched<G> = (
@@ -624,6 +635,9 @@ pub struct RayMarchPipeline<G: GpuGeometry> {
     scenes: Vec<Scene>,
     /// How many of `scenes` are drawn this frame.
     drawn: usize,
+    /// Whether the last `prepare` was for the other eye's image, where every scene is drawn in
+    /// the opaque pass.
+    elsewhere: bool,
     /// Frames prepared, for which tile of four an interleaved scene marches.
     frame: u32,
     /// The eye of the last frame, for what an interleaved scene carries.
@@ -763,6 +777,7 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
             drawn: 0,
             frame: 0,
             last_eye: None,
+            elsewhere: false,
             _geometry: PhantomData,
         }
     }
@@ -1001,6 +1016,7 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
                 starts: None,
                 layer: false,
                 over: false,
+                late: false,
             });
         }
         &mut self.scenes[index]
@@ -1070,6 +1086,10 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
             .map(|last| G::isometry_matrix(&last.inverse().compose(&eye)));
         self.last_eye = Some(eye);
         self.frame = self.frame.wrapping_add(1);
+        // In the other eye's image no effect runs: what is drawn late is drawn as the others.
+        let elsewhere = view.elsewhere.is_some();
+        self.elsewhere = elsewhere;
+        let is_late = |marched: &RayMarched| marched.late && !elsewhere;
         // Whether the eye moved more than about a pixel since the last frame.
         let turned =
             carry.is_some_and(|m| (m - fk_math::nalgebra::Matrix4::identity()).norm() > 2e-3);
@@ -1096,7 +1116,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
                 let Some(Some(field)) = self.pipelines.get(marched.sdf.0 as usize) else {
                     return false;
                 };
-                let needs: Vec<_> = likely(marched, &settings)
+                let needs: Vec<_> = needed(marched, &settings, elsewhere)
                     .into_iter()
                     .filter(|variant| !field.has(*variant))
                     .map(|variant| (field.clone(), variant))
@@ -1116,7 +1136,9 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
             building,
         });
         // The scene ahead of the others, if any: the first drawn that asks.
-        let ahead = scenes.iter().position(|(_, marched, _, _)| marched.ahead);
+        let ahead = scenes
+            .iter()
+            .position(|(_, marched, _, _)| marched.ahead && !is_late(marched));
         // How the others find its distances: window pixels per pixel of its target, negative
         // when it is drawn over everything (nothing behind it shows at all), 0 without one.
         let ahead_pixels = ahead.map_or(0.0, |i| {
@@ -1132,7 +1154,8 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
             let index = self.drawn;
             self.drawn += 1;
             let is_ahead = ahead == Some(index);
-            let half = marched.half_resolution.unwrap_or(settings.half_resolution);
+            let late = is_late(&marched);
+            let half = !late && marched.half_resolution.unwrap_or(settings.half_resolution);
             let pixels: f32 = if half { 2.0 } else { 1.0 };
             let target_size = if half { half_size } else { view.size };
             let steps = marched.steps.unwrap_or(settings.steps);
@@ -1243,6 +1266,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
             scene.ahead = is_ahead;
             scene.coarsened = cones > 0;
             scene.over = marched.over;
+            scene.late = late;
             if let Some(targets) = targets {
                 scene.half = Some(targets);
             }
@@ -1262,7 +1286,8 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
                         offscreen,
                         tiles_marched.is_some(),
                         half,
-                        marched.over
+                        marched.over,
+                        late
                     )
                     .into_iter()
                     .all(|variant| field.has(variant)))
@@ -1403,11 +1428,19 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
     }
 
     fn render(&self, pass: &mut wgpu::RenderPass<'_>, bindings: &FrameBindings<'_>) {
-        self.draw(pass, bindings, false);
+        self.draw(pass, bindings, Draws::Image);
     }
 
     fn render_layer(&self, pass: &mut wgpu::RenderPass<'_>, bindings: &FrameBindings<'_>) {
-        self.draw(pass, bindings, true);
+        self.draw(pass, bindings, Draws::Layer);
+    }
+
+    fn has_late(&self) -> bool {
+        self.scenes[..self.drawn].iter().any(|scene| scene.late)
+    }
+
+    fn render_late(&self, pass: &mut wgpu::RenderPass<'_>, bindings: &FrameBindings<'_>) {
+        self.draw(pass, bindings, Draws::Late);
     }
 
     fn stats(&self) -> RenderStats {
@@ -1439,16 +1472,22 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
     }
 
     /// Draws every scene of this frame, or only those on the layer.
-    fn draw(&self, pass: &mut wgpu::RenderPass<'_>, bindings: &FrameBindings<'_>, layer: bool) {
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>, bindings: &FrameBindings<'_>, which: Draws) {
         for scene in &self.scenes[..self.drawn] {
-            if layer && !scene.layer {
+            let drawn = match which {
+                Draws::Image => !scene.late,
+                Draws::Layer => scene.layer && !scene.late,
+                Draws::Late => scene.late,
+            };
+            if !drawn {
                 continue;
             }
-            let variant = match (scene.halved, scene.over) {
-                (true, false) => Variant::Composite,
-                (true, true) => Variant::CompositeOver,
-                (false, false) => Variant::Full,
-                (false, true) => Variant::FullOver,
+            let variant = match (scene.late, scene.halved, scene.over) {
+                (true, _, _) => Variant::Late,
+                (false, true, false) => Variant::Composite,
+                (false, true, true) => Variant::CompositeOver,
+                (false, false, false) => Variant::Full,
+                (false, false, true) => Variant::FullOver,
             };
             let Some(pipeline) = self.pipeline(scene, variant) else {
                 continue;
@@ -1473,13 +1512,32 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
     }
 }
 
+/// Which draws of the scenes: those of the image, those on the layer, those drawn late.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Draws {
+    Image,
+    Layer,
+    Late,
+}
+
 /// The pipelines a scene is drawn with in a frame: with its rays started from `cones`, marched
 /// `offscreen` (at half resolution, `half`, or ahead), its pixels `carried` from the last frame,
-/// drawn `over` everything.
-fn drawn_with(cones: bool, offscreen: bool, carried: bool, half: bool, over: bool) -> Vec<Variant> {
+/// drawn `over` everything; or drawn `late`, after the image effects, with its cones only.
+fn drawn_with(
+    cones: bool,
+    offscreen: bool,
+    carried: bool,
+    half: bool,
+    over: bool,
+    late: bool,
+) -> Vec<Variant> {
     let mut variants = Vec::new();
     if cones {
         variants.push(Variant::Coarse);
+    }
+    if late {
+        variants.push(Variant::Late);
+        return variants;
     }
     if offscreen {
         if carried {
@@ -1505,16 +1563,34 @@ fn drawn_with(cones: bool, offscreen: bool, carried: bool, half: bool, over: boo
     variants
 }
 
-/// The pipelines a scene `marched` as `settings` say is likely drawn with in its first frames:
-/// all it asks for, cones, half resolution, carrying, as it is now.
-fn likely(marched: &RayMarched, settings: &RayMarching) -> Vec<Variant> {
-    let half = marched.half_resolution.unwrap_or(settings.half_resolution);
+/// The pipelines a scene `marched` as `settings` say draws with in a frame of the image, or,
+/// `elsewhere`, of the other eye's, where a late scene is drawn as the others.
+fn needed(marched: &RayMarched, settings: &RayMarching, elsewhere: bool) -> Vec<Variant> {
     let cones = marched.coarse > 0 && settings.metric.is_none();
-    let offscreen = half || marched.ahead;
-    let mut variants = drawn_with(cones, offscreen, false, half, marched.over);
-    if marched.ahead && !half && marched.interleave.max(marched.interleave_moving) > 1 {
-        variants.extend(drawn_with(cones, offscreen, true, half, marched.over));
+    if marched.late && !elsewhere {
+        return drawn_with(cones, false, false, false, marched.over, true);
     }
+    let half = marched.half_resolution.unwrap_or(settings.half_resolution);
+    let offscreen = half || marched.ahead;
+    let mut variants = drawn_with(cones, offscreen, false, half, marched.over, false);
+    if marched.ahead && !half && marched.interleave.max(marched.interleave_moving) > 1 {
+        variants.extend(drawn_with(
+            cones,
+            offscreen,
+            true,
+            half,
+            marched.over,
+            false,
+        ));
+    }
+    variants
+}
+
+/// The pipelines a scene `marched` as `settings` say is likely drawn with in its first frames:
+/// all it asks for, cones, half resolution, carrying, as it is now. The other eye's image
+/// asks for a late scene's others as it needs them.
+fn likely(marched: &RayMarched, settings: &RayMarching) -> Vec<Variant> {
+    let mut variants = needed(marched, settings, false);
     variants.sort_by_key(|variant| *variant as usize);
     variants.dedup();
     variants

@@ -34,10 +34,13 @@ pub(crate) enum Variant {
     Classify,
     Finalize,
     Refine,
+    /// Full resolution, one sample, into the image after the image effects
+    /// ([`RayMarched::late`](crate::RayMarched)).
+    Late,
 }
 
 impl Variant {
-    pub(crate) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 12] = [
         Self::Full,
         Self::Half,
         Self::Composite,
@@ -49,6 +52,7 @@ impl Variant {
         Self::Classify,
         Self::Finalize,
         Self::Refine,
+        Self::Late,
     ];
 
     fn index(self) -> usize {
@@ -89,7 +93,8 @@ impl Builder {
                       layout: &wgpu::PipelineLayout,
                       entry: &str,
                       targets: &[Option<wgpu::ColorTargetState>],
-                      depth: Option<wgpu::CompareFunction>| {
+                      depth: Option<wgpu::CompareFunction>,
+                      samples: u32| {
             Built::Render(
                 self.device
                     .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -110,11 +115,7 @@ impl Builder {
                             bias: Default::default(),
                         }),
                         multisample: wgpu::MultisampleState {
-                            count: if depth.is_some() {
-                                self.sample_count
-                            } else {
-                                1
-                            },
+                            count: samples,
                             ..Default::default()
                         },
                         fragment: Some(wgpu::FragmentState {
@@ -147,14 +148,24 @@ impl Builder {
             Some(wgpu::CompareFunction::Greater),
             Some(wgpu::CompareFunction::Always),
         );
+        // Into the opaque pass, at its sample count; offscreen and late, one sample.
+        let samples = self.sample_count;
         match variant {
-            Variant::Full => render("vertex", &self.full_layout, "fragment", &opaque, tested),
+            Variant::Full => render(
+                "vertex",
+                &self.full_layout,
+                "fragment",
+                &opaque,
+                tested,
+                samples,
+            ),
             Variant::Half => render(
                 "vertex",
                 &self.full_layout,
                 "fragment_half",
                 &offscreen,
                 None,
+                1,
             ),
             Variant::Composite => render(
                 "vertex",
@@ -162,17 +173,31 @@ impl Builder {
                 "composite",
                 &opaque,
                 tested,
+                samples,
             ),
-            Variant::FullOver => render("vertex", &self.full_layout, "fragment", &opaque, over),
-            Variant::CompositeOver => {
-                render("vertex", &self.composite_layout, "composite", &opaque, over)
-            }
+            Variant::FullOver => render(
+                "vertex",
+                &self.full_layout,
+                "fragment",
+                &opaque,
+                over,
+                samples,
+            ),
+            Variant::CompositeOver => render(
+                "vertex",
+                &self.composite_layout,
+                "composite",
+                &opaque,
+                over,
+                samples,
+            ),
             Variant::Coarse => render(
                 "vertex",
                 &self.cone_layout,
                 "fragment_coarse",
                 &[Some(COARSE.into())],
                 None,
+                1,
             ),
             Variant::Carry => render(
                 "vertex",
@@ -180,6 +205,7 @@ impl Builder {
                 "fragment_carry",
                 &offscreen,
                 None,
+                1,
             ),
             Variant::Tiles => render(
                 "vertex_tiles",
@@ -187,7 +213,9 @@ impl Builder {
                 "fragment_half",
                 &offscreen,
                 None,
+                1,
             ),
+            Variant::Late => render("vertex", &self.full_layout, "fragment", &opaque, tested, 1),
             Variant::Classify => compute(&self.listing_layout, "classify"),
             Variant::Finalize => compute(&self.listing_layout, "finalize"),
             Variant::Refine => compute(&self.tracing_layout, "refine"),
