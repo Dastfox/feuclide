@@ -63,11 +63,13 @@ struct Draw {
 }
 
 /// The pipelines of one deform: the painted surfaces, the same cut off at the view's clip
-/// plane (for the other eye's image) and the shadow casters.
+/// plane (for the other eye's image) and the shadow casters, by their far sides or by both
+/// ([`Shadows::two_sided`](crate::Shadows::two_sided)).
 struct Pipelines {
     opaque: wgpu::RenderPipeline,
     clipped: wgpu::RenderPipeline,
     shadow: wgpu::RenderPipeline,
+    shadow_both: wgpu::RenderPipeline,
 }
 
 /// The normal maps as the shader samples them: a texture array, the flat map first.
@@ -279,6 +281,8 @@ pub struct RasterPipeline<G: GpuGeometry> {
     window_draws: [Vec<Draw>; 1 + MAX_OTHER_EYES],
     /// Whether the view last queued is cut off at its clip plane.
     clipped: bool,
+    /// Whether the casters last queued cast by both their sides.
+    two_sided: bool,
     stats: RenderStats,
     _geometry: PhantomData<fn() -> G>,
 }
@@ -346,6 +350,7 @@ impl<G: GpuGeometry> RasterPipeline<G> {
             layer_draws: Vec::new(),
             window_draws: Default::default(),
             clipped: false,
+            two_sided: false,
             stats: RenderStats::default(),
             _geometry: PhantomData,
         }
@@ -563,43 +568,46 @@ impl Builder {
         };
         let opaque = painted("fragment");
         let clipped = painted("clipped_fragment");
-        let shadow = self
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&self.shadow_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("shadow_vertex"),
-                    compilation_options: Default::default(),
-                    buffers: &buffers,
-                },
-                // The sides turned away from the light cast: the lit sides never shadow
-                // themselves, and the dark sides are painted in the shadow colour anyway.
-                primitive: wgpu::PrimitiveState {
-                    cull_mode: Some(wgpu::Face::Front),
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: self.shadow_format,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                    stencil: Default::default(),
-                    bias: wgpu::DepthBiasState {
-                        constant: 0,
-                        slope_scale: 1.0,
-                        clamp: 0.0,
+        let shadow = |cull_mode| {
+            self.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&self.shadow_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("shadow_vertex"),
+                        compilation_options: Default::default(),
+                        buffers: &buffers,
                     },
-                }),
-                multisample: Default::default(),
-                fragment: None,
-                multiview_mask: None,
-                cache: None,
-            });
+                    primitive: wgpu::PrimitiveState {
+                        cull_mode,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: self.shadow_format,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                        stencil: Default::default(),
+                        bias: wgpu::DepthBiasState {
+                            constant: 0,
+                            slope_scale: 1.0,
+                            clamp: 0.0,
+                        },
+                    }),
+                    multisample: Default::default(),
+                    fragment: None,
+                    multiview_mask: None,
+                    cache: None,
+                })
+        };
         Pipelines {
             opaque,
             clipped,
-            shadow,
+            // The sides turned away from the light cast: the lit sides never shadow
+            // themselves, and the dark sides are painted in the shadow colour anyway.
+            shadow: shadow(Some(wgpu::Face::Front)),
+            // Every side: where solids meet, the nearer side shades the corner.
+            shadow_both: shadow(None),
         }
     }
 }
@@ -692,6 +700,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
         let origin = G::origin();
         let mut stats = RenderStats::default();
         self.clipped = view.clipped;
+        self.two_sided = view.shadow.is_some_and(|shadow| shadow.two_sided);
         // On a sphere every instance is seen twice, the second time the long way round.
         let antipode = G::constant_curvature()
             .filter(|&k| k > 0.0)
@@ -800,7 +809,11 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
 
     fn render_shadows(&self, pass: &mut wgpu::RenderPass<'_>, frame: &wgpu::BindGroup) {
         self.draw(pass, &self.shadow_draws, |pass, pipelines| {
-            pass.set_pipeline(&pipelines.shadow);
+            pass.set_pipeline(if self.two_sided {
+                &pipelines.shadow_both
+            } else {
+                &pipelines.shadow
+            });
             pass.set_bind_group(0, frame, &[]);
         });
     }

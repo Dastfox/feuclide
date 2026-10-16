@@ -20,6 +20,8 @@ pub struct ShadowView {
     pub range: Real,
     /// Half-depth of the map along the light.
     pub depth: Real,
+    /// Both sides of every caster drawn into it: [`Shadows::two_sided`].
+    pub two_sided: bool,
 }
 
 impl ShadowView {
@@ -68,6 +70,7 @@ impl ShadowView {
             matrix: to_map * to_root,
             range,
             depth,
+            two_sided: shadows.two_sided,
         })
     }
 

@@ -159,6 +159,15 @@ pub struct Shadows {
     /// How far a surface is moved along its normal before it is tested, in texels, so it does
     /// not shadow itself.
     pub normal_offset: Real,
+    /// Whether both sides of every caster are drawn into the map, not only those turned away
+    /// from the light. With only the far sides, a lit face meeting another solid (a wall at a
+    /// wall's corner, under a ceiling) is tested against that solid's far side, at its own depth
+    /// at the corner, and the normal offset and the soft edge carry it past: a strip along the
+    /// corner comes out lit. With both, the near side shades it, a solid's thickness nearer the
+    /// light. Turn it on where thin solids meet in the sun (rooms under an open sky); lit faces
+    /// then cast onto themselves, and the normal offset keeps them clear (at 1.5 texels, with the
+    /// casters' slope bias, whatever the light's angle).
+    pub two_sided: bool,
 }
 
 impl Default for Shadows {
@@ -171,6 +180,7 @@ impl Default for Shadows {
             softness: 1.5,
             fade: 0.8,
             normal_offset: 1.5,
+            two_sided: false,
         }
     }
 }
