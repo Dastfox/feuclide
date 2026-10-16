@@ -47,6 +47,8 @@ struct Vertex {
     @location(8) uv: vec4<f32>,
     // The tangent along u, zero without a normal map.
     @location(9) tangent: vec4<f32>,
+    // What the colour is multiplied by at this vertex, in 128ths: 128 leaves it as it is.
+    @location(10) shade: vec4<u32>,
 }
 
 struct Varyings {
@@ -84,7 +86,7 @@ fn vertex(in: Vertex) -> Varyings {
     out.normal = geo_apply_iso(iso, shaped.normal);
     out.uv = in.uv;
     out.tangent = geo_apply_iso(iso, in.tangent);
-    out.color = in.color;
+    out.color = vec4<f32>(in.color.rgb * vec3<f32>(in.shade.rgb) / 128.0, in.color.w);
     out.haze = shaped.haze;
     return out;
 }

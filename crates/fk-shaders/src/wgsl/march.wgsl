@@ -25,6 +25,9 @@ struct March {
     // when the image settles over frames (`fk_render::Settle`): the pixels carried are marked
     // for it, `CARRIED` added to their alpha, so that it takes in only what was marched.
     interleave: vec4<f32>,
+    // x: 1 to draw each ray's steps in place of its surface (`fk_render::RayMarching::heat`),
+    // misses too.
+    debug: vec4<f32>,
     // This frame's eye coordinates to the last frame's, the others carried by it.
     carry: mat4x4<f32>,
     // The quotient the scene is in (`fk_render::QuotientView`), in the eye's frame.

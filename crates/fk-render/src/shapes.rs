@@ -8,6 +8,7 @@ use std::f64::consts::TAU;
 
 use fk_math::Real;
 use fk_math::nalgebra::{Vector2, Vector3};
+use fk_math::rand::Seeded;
 
 use crate::MeshBuilder;
 
@@ -63,8 +64,103 @@ pub fn disc(radius: Real, sides: u32) -> MeshBuilder {
     mesh
 }
 
+/// How far in from its edges a [`bevelled`] box's faces stop, in the units of its half extents.
+pub const BEVEL: Real = 0.015;
+
 /// A box centred on the origin with the given half extents, flat faces.
 pub fn cuboid(half: Vector3<Real>) -> MeshBuilder {
+    // Trial: every box bevelled, to measure what it costs.
+    bevelled(half, BEVEL)
+}
+
+/// A box centred on the origin with the given half extents, its edges and corners cut across
+/// `bevel` in from each face (at most a fifth of its thinnest half extent). Each face's corners
+/// keep the face's normal and the cuts between faces are made of those same corners, so the
+/// light rolls round an edge instead of breaking on it: 24 vertices, 44 triangles.
+pub fn bevelled(half: Vector3<Real>, bevel: Real) -> MeshBuilder {
+    let r = bevel.min(0.2 * half.min());
+    if r <= 0.0 {
+        return sharp(half);
+    }
+    let mut mesh = MeshBuilder::new();
+    // The corner of face `axis` towards `signs` (its own sign the face's), by `signs` and axis.
+    let mut corner = HashMap::new();
+    for axis in 0..3 {
+        for x in [-1.0, 1.0] {
+            for y in [-1.0, 1.0] {
+                for z in [-1.0, 1.0] {
+                    let signs = Vector3::new(x, y, z);
+                    let p = Vector3::from_fn(|k, _| {
+                        signs[k] * if k == axis { half[k] } else { half[k] - r }
+                    });
+                    let n = Vector3::from_fn(|k, _| if k == axis { signs[k] } else { 0.0 });
+                    let key = (axis, [x, y, z].map(|s| s > 0.0));
+                    corner.insert(key, mesh.vertex(p, n));
+                }
+            }
+        }
+    }
+    let at = |axis: usize, signs: [bool; 3]| corner[&(axis, signs)];
+    // Wound outward: the box is convex about the origin.
+    fn facet(mesh: &mut MeshBuilder, [a, b, c]: [u32; 3]) {
+        let p = |i: u32| mesh.positions()[i as usize];
+        if (p(b) - p(a))
+            .cross(&(p(c) - p(a)))
+            .dot(&(p(a) + p(b) + p(c)))
+            >= 0.0
+        {
+            mesh.triangle(a, b, c);
+        } else {
+            mesh.triangle(a, c, b);
+        }
+    }
+    fn quad(mesh: &mut MeshBuilder, [a, b, c, d]: [u32; 4]) {
+        facet(mesh, [a, b, c]);
+        facet(mesh, [a, c, d]);
+    }
+    for axis in 0..3 {
+        let (j, k) = ((axis + 1) % 3, (axis + 2) % 3);
+        for s in [false, true] {
+            // The face, its corners in turn round it.
+            let q = [(false, false), (true, false), (true, true), (false, true)].map(|(a, b)| {
+                let mut signs = [false; 3];
+                (signs[axis], signs[j], signs[k]) = (s, a, b);
+                at(axis, signs)
+            });
+            quad(&mut mesh, q);
+            // The cut along the edge it shares with face `j`.
+            for t in [false, true] {
+                let ends = [false, true].map(|b| {
+                    let mut signs = [false; 3];
+                    (signs[axis], signs[j], signs[k]) = (s, t, b);
+                    signs
+                });
+                quad(
+                    &mut mesh,
+                    [
+                        at(axis, ends[0]),
+                        at(axis, ends[1]),
+                        at(j, ends[1]),
+                        at(j, ends[0]),
+                    ],
+                );
+            }
+        }
+    }
+    // The corners.
+    for x in [false, true] {
+        for y in [false, true] {
+            for z in [false, true] {
+                let signs = [x, y, z];
+                facet(&mut mesh, [at(0, signs), at(1, signs), at(2, signs)]);
+            }
+        }
+    }
+    mesh
+}
+
+/// A box with sharp edges: six flat quads.
+fn sharp(half: Vector3<Real>) -> MeshBuilder {
     let mut mesh = MeshBuilder::new();
     let (x, y, z) = (Vector3::x(), Vector3::y(), Vector3::z());
     // (normal, u, v) with u × v = normal.
@@ -280,14 +376,68 @@ pub fn up_quad(mesh: &mut MeshBuilder, [a, b, c, d]: [u32; 4]) {
     }
 }
 
-/// A boulder: an icosahedron stretched by `scale`, shaded round ([`smooth`]).
+/// How far across a boulder's facets are at most, in the units of its `scale`, unless that would
+/// take more than three subdivisions: a pebble stays an icosahedron, a rock a man's height is
+/// round however near the eye comes.
+pub const BOULDER_FACET: Real = 0.15;
+
+/// A boulder: an icosahedron stretched by `scale`, subdivided until its facets are
+/// [`BOULDER_FACET`] across, shaded round ([`smooth`]). Exactly an ellipsoid's points, so
+/// whatever is laid on it stays on it.
 pub fn boulder(scale: Vector3<Real>) -> MeshBuilder {
+    stone(scale, 0.0, 0)
+}
+
+/// The corners of a boulder of `scale` as the coarsest one lists them: the icosahedron's, once
+/// for every facet each is a corner of. Points on its surface to lay things on, the same whatever
+/// its detail, so that a layout picking among them stays as it was.
+pub fn boulder_corners(scale: Vector3<Real>) -> Vec<Vector3<Real>> {
     let base = sphere(1.0, 0);
+    base.indices()
+        .iter()
+        .map(|&i| base.positions()[i as usize].component_mul(&scale))
+        .collect()
+}
+
+/// A boulder ([`boulder`]) whose surface swells and dips by up to `lumps` of its size: a few
+/// broad waves over its directions, the same for the same `seed`, so it reads as a stone rather
+/// than an egg.
+pub fn stone(scale: Vector3<Real>, lumps: Real, seed: u64) -> MeshBuilder {
+    // An icosahedron's edge on the unit sphere, halved by each subdivision.
+    const EDGE: Real = 1.0515;
+    let widest = scale.amax();
+    let mut subdivisions = 0;
+    while subdivisions < 3 && EDGE * widest * 0.5_f64.powi(subdivisions) > BOULDER_FACET {
+        subdivisions += 1;
+    }
+    let base = sphere(1.0, subdivisions as u32);
+    // Each wave: its axis, how many radians it turns across the stone, its phase, its weight.
+    let mut random = Seeded::new(seed);
+    let waves: Vec<(Vector3<Real>, Real, Real, Real)> = [
+        ([2.0, 3.0], 1.0),
+        ([3.0, 4.5], 0.6),
+        ([5.0, 7.0], 0.35),
+        ([8.0, 11.0], 0.2),
+    ]
+    .into_iter()
+    .map(|(turns, weight)| {
+        let axis = random.direction();
+        (axis, random.between(turns), TAU * random.next(), weight)
+    })
+    .collect();
+    let total: Real = waves.iter().map(|w| w.3).sum();
+    let swell = |d: &Vector3<Real>| {
+        waves
+            .iter()
+            .map(|(axis, turns, phase, weight)| weight * (turns * axis.dot(d) + phase).sin())
+            .sum::<Real>()
+            / total
+    };
     let mut mesh = MeshBuilder::new();
     let positions: Vec<Vector3<Real>> = base
         .positions()
         .iter()
-        .map(|p| p.component_mul(&scale))
+        .map(|d| (d * (1.0 + lumps * swell(d))).component_mul(&scale))
         .collect();
     for t in base.indices().as_chunks::<3>().0 {
         let [a, b, c] = t.map(|i| positions[i as usize]);
@@ -366,6 +516,38 @@ mod tests {
         assert_outward("prism", &prism(0.5, 3.0, 6));
         assert_outward("cylinder", &cylinder(0.5, 3.0, 16));
         assert_outward("sphere", &sphere(2.0, 2));
+        assert_outward("bevelled", &bevelled(Vector3::new(1.0, 2.0, 0.5), 0.1));
+        assert_outward("boulder", &boulder(Vector3::new(1.2, 0.6, 0.9)));
+        assert_outward("stone", &stone(Vector3::new(1.2, 0.6, 0.9), 0.12, 7));
+    }
+
+    #[test]
+    fn a_bevelled_box_is_closed_and_cut_where_it_says() {
+        let half = Vector3::new(1.0, 2.0, 0.5);
+        let mesh = bevelled(half, 0.1);
+        assert_eq!(mesh.positions().len(), 24);
+        assert_eq!(mesh.indices().len(), 44 * 3);
+        // Every edge between two of its triangles, once each way.
+        let mut edges = BTreeMap::new();
+        for t in mesh.indices().as_chunks::<3>().0 {
+            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                *edges.entry((a, b)).or_insert(0) += 1;
+            }
+        }
+        for (&(a, b), &count) in &edges {
+            assert_eq!(count, 1, "edge {a}-{b}");
+            assert_eq!(edges.get(&(b, a)), Some(&1), "edge {a}-{b} open");
+        }
+        for p in mesh.positions() {
+            let d = half - p.abs();
+            let mut d = [d.x, d.y, d.z];
+            d.sort_by(Real::total_cmp);
+            assert!(d[0].abs() < 1e-12 && (d[1] - 0.1).abs() < 1e-12, "{p}");
+        }
+        // Thinner than five bevels, the cut shrinks; at nothing, the box is sharp.
+        let thin = bevelled(Vector3::new(1.0, 0.01, 1.0), 0.1);
+        assert!(thin.positions().iter().all(|p| p.x.abs() > 1.0 - 0.0021));
+        assert_eq!(bevelled(half, 0.0).indices().len(), 12 * 3);
     }
 
     #[test]

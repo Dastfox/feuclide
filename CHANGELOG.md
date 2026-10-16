@@ -11,6 +11,9 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 
 - fk-render: `RayMarched::late`, a scene drawn after the image effects, over the image as they
   left it, against the opaque depth (resolved to one sample when multisampled).
+- fk-render: a vertex shade (`MeshBuilder::shade`, carried by `Kit`, which numbers its parts),
+  bevelled boxes and lumpy subdivided stones (`shapes::bevelled`, `stone`), and a heat map of
+  the march's steps (`RayMarching::heat`, `FK_MARCH_HEAT`).
 
 ## 2026-10-14
 

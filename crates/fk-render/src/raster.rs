@@ -461,7 +461,7 @@ impl Builder {
                 label: Some("fk raster window"),
                 source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
             });
-        let vertex_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 8 => Float32x4, 9 => Float32x4];
+        let vertex_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Uint8x4];
         let instance_attributes = wgpu::vertex_attr_array![
             2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
             6 => Float32x4, 7 => Float32x4,
@@ -510,7 +510,7 @@ impl Builder {
                 label: Some(label),
                 source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
             });
-        let vertex_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 8 => Float32x4, 9 => Float32x4];
+        let vertex_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Uint8x4];
         let instance_attributes = wgpu::vertex_attr_array![
             2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
             6 => Float32x4, 7 => Float32x4,

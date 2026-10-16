@@ -26,6 +26,10 @@ pub struct Vertex {
     /// [`GpuGeometry::embed_tangent`] of the unit tangent along `u`, at right angles to the
     /// normal; zero without a normal map.
     pub tangent: Vec4f,
+    /// What the vertex's colour is multiplied by, in 128ths (red, green, blue; 128 the last):
+    /// 128 leaves the instance's colour as it is, up to 255 brightens it nearly twice
+    /// ([`MeshBuilder::shade`]). Four bytes, so the vertex stays light to read.
+    pub shade: [u8; 4],
 }
 
 /// A triangle mesh embedded in a geometry, ready to upload.
@@ -53,6 +57,8 @@ pub struct MeshBuilder {
     uvs: Vec<[Real; 2]>,
     /// Each vertex's own map, laid over the mesh's.
     maps: Vec<Option<NormalMap>>,
+    /// What each vertex's colour is multiplied by.
+    shades: Vec<[Real; 3]>,
     indices: Vec<u32>,
     normal_map: Option<NormalMap>,
     /// Whether, drawn as a window onto the other eye ([`ShowsElsewhere`](crate::ShowsElsewhere)),
@@ -98,7 +104,15 @@ impl MeshBuilder {
         self.normals.push(normal.normalize());
         self.uvs.push(uv);
         self.maps.push(map);
+        self.shades.push([1.0; 3]);
         index
+    }
+
+    /// Multiplies the colour at `vertex` by `shade` (red, green, blue, 0 to just under 2, in
+    /// steps of a 128th), in place of white: the thing's own tint, light baked in, a darkening
+    /// where it is shut in.
+    pub fn shade(&mut self, vertex: u32, shade: [Real; 3]) {
+        self.shades[vertex as usize] = shade;
     }
 
     /// Drawn as a window onto the other eye ([`ShowsElsewhere`](crate::ShowsElsewhere)), the
@@ -152,6 +166,11 @@ impl MeshBuilder {
     /// The texture coordinates so far.
     pub fn uvs(&self) -> &[[Real; 2]] {
         &self.uvs
+    }
+
+    /// What each vertex's colour is multiplied by so far ([`shade`](Self::shade)).
+    pub fn shades(&self) -> &[[Real; 3]] {
+        &self.shades
     }
 
     /// Each vertex's normal map so far: its own, or else the mesh's.
@@ -261,6 +280,11 @@ impl MeshBuilder {
                         sign as f32,
                     ]),
                     tangent: along.map_or(Vec4f::default(), |along| carry(&along)),
+                    shade: {
+                        let [r, g, b] =
+                            self.shades[i].map(|x| (x * 128.0).round().clamp(0.0, 255.0) as u8);
+                        [r, g, b, 128]
+                    },
                 }
             })
             .collect();

@@ -267,6 +267,20 @@ struct Hit {
     // Steps taken, as a share of the budget.
     effort: f32,
     hit: bool,
+    // Steps taken, as a share of the budget, its block's cone shared among the block's rays.
+    own: f32,
+}
+
+// Whether each ray's steps are drawn in place of its surface (`march.debug.x`).
+fn heat_on() -> bool {
+    return march.debug.x > 0.5;
+}
+
+// A ray's steps, `own` a share of the budget, as a colour: blue for few, through green and
+// yellow, red for all of them, by its square root.
+fn heat(own: f32) -> vec3<f32> {
+    let x = 4.0 * sqrt(clamp(own, 0.0, 1.0));
+    return clamp(vec3<f32>(x - 1.5, 1.5 - abs(x - 2.0), 2.5 - x), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 // The ray along `dir`, from `start`: how far along it may start (its block's cone) and the
@@ -337,7 +351,9 @@ fn trace(dir: vec3<f32>, start: vec2<f32>, limit: f32) -> Hit {
     // a hit and darkened by the effort.
     let hit = best.t < far && (best_error < 1.0 || taken == budget);
     let effort = min((f32(taken) + start.y) / f32(budget), 1.0);
-    return Hit(best, effort, hit);
+    let block = max(march.paint.z * march.paint.z, 1.0);
+    let own = min((f32(taken) + start.y / block) / f32(budget), 1.0);
+    return Hit(best, effort, hit, own);
 }
 
 // How far along `dir` the cone round it, `n` pixels across, gets before a ray in it may come
@@ -392,6 +408,9 @@ fn normal_at(p: vec4<f32>, h: f32) -> vec4<f32> {
 }
 
 fn shade(hit: Hit) -> vec3<f32> {
+    if heat_on() {
+        return heat(hit.own);
+    }
     let p = geo_normalize_point(ray_point(hit.ray));
     let t = hit.ray.t;
     // The colour before the normal: it is asked where the march last asked the field, which
@@ -415,6 +434,12 @@ fn shade(hit: Hit) -> vec3<f32> {
     let fog = fogged * clamp(march.paint.y, 0.0, 1.0);
     let haze = 1.0 - (1.0 - fog) * (1.0 - clamp(march.shading.y, 0.0, 1.0));
     return mix(lit, sky_haze(hit.ray.dir), haze);
+}
+
+// Where a ray that hit nothing is drawn while its steps are (`heat_on`): as far as it got, short
+// of the far surface.
+fn missed(hit: Hit) -> f32 {
+    return clamp(hit.ray.t, view.near, 0.999 * view.far);
 }
 
 // The image's alpha for a hit: 1, or what the field's `sdf_alpha` says there.
@@ -448,6 +473,9 @@ fn fragment(@builtin(position) frag: vec4<f32>) -> Surface {
     let ndc = ray_ndc(frag.xy);
     let hit = trace(pixel_dir(ndc), start_at(frag.xy), limit_at(frag.xy));
     if !hit.hit {
+        if heat_on() {
+            return Surface(vec4<f32>(heat(hit.own), 1.0), geo_distance_to_depth(missed(hit), ndc));
+        }
         discard;
     }
     return Surface(
@@ -469,6 +497,9 @@ fn fragment_half(@builtin(position) frag: vec4<f32>) -> Half {
     let limit = limit_at(pixel);
     let hit = trace(pixel_dir(ndc), start_at(pixel), limit);
     if !hit.hit {
+        if heat_on() {
+            return Half(vec4<f32>(heat(hit.own), 1.0), missed(hit));
+        }
         // Nothing, or, where the scene ahead stopped it, -1: hidden, not empty.
         return Half(vec4<f32>(0.0), select(0.0, -1.0, limit < BIG));
     }
@@ -650,6 +681,9 @@ fn refine(@builtin(global_invocation_id) id: vec3<u32>) {
     if hit.hit {
         colour = vec4<f32>(shade(hit), surface_alpha(hit));
         d = hit.ray.t;
+    } else if heat_on() {
+        colour = vec4<f32>(heat(hit.own), 1.0);
+        d = missed(hit);
     }
     textureStore(refined_color_out, texel, colour);
     textureStore(refined_distance_out, texel, vec4<f32>(d, 0.0, 0.0, 0.0));

@@ -452,6 +452,11 @@ pub struct RayMarching {
     /// of the geometry's closed-form geodesics; see [`sampled`](Self::sampled). `None` for the
     /// closed form.
     pub metric: Option<String>,
+    /// Draws each ray's steps in place of its surface, to see where the march spends its time:
+    /// from blue (few) through green and yellow to red (the whole of [`steps`](Self::steps)),
+    /// by the square root of the share taken, its block's cone counted shared among its rays;
+    /// rays that hit nothing too. Unlit and unfogged. On from the start with `FK_MARCH_HEAT=1`.
+    pub heat: bool,
 }
 
 impl Default for RayMarching {
@@ -464,6 +469,7 @@ impl Default for RayMarching {
             longest_step: 0.0,
             half_resolution: false,
             metric: None,
+            heat: std::env::var_os("FK_MARCH_HEAT").is_some(),
         }
     }
 }
@@ -484,6 +490,7 @@ struct MarchBlock {
     shading: Vec4f,
     paint: Vec4f,
     interleave: Vec4f,
+    debug: Vec4f,
     carry: [Vec4f; 4],
     fold: Fold,
     params: [Vec4f; SDF_PARAMS],
@@ -534,6 +541,7 @@ impl MarchBlock {
             shading: Vec4f([0.0, 0.0, 1.0, 0.0]),
             paint: Vec4f([1.0, 1.0, 0.0, 0.0]),
             interleave: Vec4f([0.0; 4]),
+            debug: Vec4f([0.0; 4]),
             carry: matrix_columns(&fk_math::nalgebra::Matrix4::identity()).map(Vec4f),
             fold: Fold::default(),
             params: params.map(Vec4f),
@@ -1187,6 +1195,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
                     if is_ahead { 0.0 } else { ahead_pixels },
                 ]),
                 interleave: Vec4f([0.0; 4]),
+                debug: Vec4f([f32::from(u8::from(settings.heat)), 0.0, 0.0, 0.0]),
                 carry: [Vec4f([0.0; 4]); 4],
                 fold,
                 params: marched.params.map(Vec4f),

@@ -40,6 +40,8 @@ pub struct Kit<M> {
     mesh: MeshBuilder,
     /// Each vertex's material, where its part was added as one.
     surfaces: Vec<Option<M>>,
+    /// Each vertex's part, counted from 0 in the order they were added.
+    parts: Vec<u32>,
     /// What the vertices without one wear.
     surface: Option<M>,
     /// Whether they wear nothing, not even the default: water, glass.
@@ -51,6 +53,7 @@ impl<M> Default for Kit<M> {
         Self {
             mesh: MeshBuilder::new(),
             surfaces: Vec::new(),
+            parts: Vec::new(),
             surface: None,
             bare: false,
         }
@@ -62,6 +65,7 @@ impl<M: Copy> Kit<M> {
     pub fn from_mesh(mesh: MeshBuilder) -> Self {
         Self {
             surfaces: vec![None; mesh.positions().len()],
+            parts: vec![0; mesh.positions().len()],
             mesh,
             surface: None,
             bare: false,
@@ -107,10 +111,19 @@ impl<M: Copy> Kit<M> {
 
     fn add_with(&mut self, part: &MeshBuilder, at: &Isometry, surface: Option<M>) {
         let start = self.mesh.positions().len() as u32;
-        for (p, n) in part.positions().iter().zip(part.normals()) {
-            self.mesh
+        let number = self.parts.last().map_or(0, |last| last + 1);
+        for ((p, n), shade) in part
+            .positions()
+            .iter()
+            .zip(part.normals())
+            .zip(part.shades())
+        {
+            let i = self
+                .mesh
                 .vertex(at.rotation * p + at.translation, at.rotation * n);
+            self.mesh.shade(i, *shade);
             self.surfaces.push(surface);
+            self.parts.push(number);
         }
         let indices = part.indices();
         for t in indices.as_chunks::<3>().0 {
@@ -133,15 +146,44 @@ impl<M: Copy> Kit<M> {
         &self.mesh
     }
 
+    /// Each vertex's part, counted from 0 in the order they were added.
+    pub fn parts(&self) -> &[u32] {
+        &self.parts
+    }
+
+    /// The material `vertex` wears, its part's or else the kit's: `None` for nothing, or for
+    /// whatever the default is when it is drawn ([`surfaced`](Self::surfaced)) unless the kit is
+    /// bare.
+    pub fn wears(&self, vertex: usize) -> Option<M> {
+        self.surfaces[vertex].or(self.surface)
+    }
+
+    /// Whether the parts without a material of their own wear nothing ([`lay_nothing`](Self::lay_nothing)).
+    pub fn is_bare(&self) -> bool {
+        self.bare
+    }
+
+    /// The kit with each vertex's shade ([`MeshBuilder::shade`]) multiplied by `shade(vertex)`.
+    pub fn shaded(&self, shade: impl Fn(usize) -> [Real; 3]) -> Self {
+        let mut kit = self.clone();
+        for (i, old) in self.mesh.shades().iter().enumerate() {
+            let by = shade(i);
+            kit.mesh.shade(i as u32, [0, 1, 2].map(|k| old[k] * by[k]));
+        }
+        kit
+    }
+
     /// The kit with each vertex moved by `moved(position, normal)`, keeping its surface.
     pub fn moved(
         &self,
         moved: impl Fn(&Vector3<Real>, &Vector3<Real>) -> [Vector3<Real>; 2],
     ) -> Self {
         let mut mesh = MeshBuilder::new();
-        for (p, n) in self.mesh.positions().iter().zip(self.mesh.normals()) {
+        let m = &self.mesh;
+        for ((p, n), shade) in m.positions().iter().zip(m.normals()).zip(m.shades()) {
             let [p, n] = moved(p, n);
-            mesh.vertex(p, n);
+            let i = mesh.vertex(p, n);
+            mesh.shade(i, *shade);
         }
         for t in self.mesh.indices().as_chunks::<3>().0 {
             mesh.triangle(t[0], t[1], t[2]);
@@ -149,6 +191,7 @@ impl<M: Copy> Kit<M> {
         Self {
             mesh,
             surfaces: self.surfaces.clone(),
+            parts: self.parts.clone(),
             surface: self.surface,
             bare: self.bare,
         }
@@ -190,13 +233,15 @@ impl<M: Copy> Kit<M> {
                 let axis = map.map_or(3, |_| axis(&face));
                 *split.entry((i, axis)).or_insert_with(|| {
                     let (p, n) = (positions[i as usize], normals[i as usize]);
-                    match map {
+                    let at = match map {
                         Some((map, metres)) => {
                             let uv = box_uv(&p, &face).map(|x| x / metres);
                             out.vertex_mapped(p, n, uv, Some(map))
                         }
                         None => out.vertex(p, n),
-                    }
+                    };
+                    out.shade(at, self.mesh.shades()[i as usize]);
+                    at
                 })
             });
             out.triangle(i, j, k);
@@ -377,5 +422,51 @@ impl<K: Default> Chunks<K> {
     /// Every chunk's kits, `kinds` each.
     pub fn kits(&self) -> impl Iterator<Item = &[K]> {
         self.chunks.values().map(Vec::as_slice)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shades_and_parts_go_with_the_vertices() {
+        let mut part = shapes::cuboid(Vector3::new(1.0, 1.0, 1.0));
+        part.shade(0, [0.5, 0.6, 0.7]);
+        let mut kit = Kit::<u8>::default();
+        kit.add(&part, &translation(Vector3::x()));
+        kit.add_as(&part, &translation(Vector3::y()), 1);
+        let n = part.positions().len();
+        assert_eq!(kit.parts()[0], 0);
+        assert_eq!(kit.parts()[n], 1);
+        assert_eq!(kit.mesh().shades()[n], [0.5, 0.6, 0.7]);
+        assert_eq!(kit.wears(0), None);
+        assert_eq!(kit.wears(n), Some(1));
+
+        let kit = kit.shaded(|i| {
+            if kit.parts()[i] == 1 {
+                [2.0; 3]
+            } else {
+                [1.0; 3]
+            }
+        });
+        assert_eq!(kit.mesh().shades()[n], [1.0, 1.2, 1.4]);
+        assert_eq!(kit.mesh().shades()[1], [1.0; 3]);
+        let moved = kit.moved(|p, n| [p + Vector3::z(), *n]);
+        assert_eq!(moved.mesh().shades(), kit.mesh().shades());
+        // Laid, each vertex keeps its shade, however its corners are split.
+        let mut maps = fk_render::NormalMaps::new(4);
+        let map = maps.add(vec![[128, 128, 255, 255]; 16]);
+        let laid = kit.surfaced(|_| Some((map, 1.0)), Some(0));
+        assert!(laid.positions().len() > kit.mesh().positions().len());
+        let m = kit.mesh();
+        for (p, shade) in laid.positions().iter().zip(laid.shades()) {
+            let kept = m
+                .positions()
+                .iter()
+                .zip(m.shades())
+                .any(|(q, s)| q == p && s == shade);
+            assert!(kept, "{p}: {shade:?}");
+        }
     }
 }
