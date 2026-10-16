@@ -15,6 +15,8 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 - fk-render: a vertex shade (`MeshBuilder::shade`, carried by `Kit`, which numbers its parts),
   bevelled boxes and lumpy subdivided stones (`shapes::bevelled`, `stone`), and a heat map of
   the march's steps (`RayMarching::heat`, `FK_MARCH_HEAT`).
+- fk-render: `OtherEyes`, up to three more eyes drawn before the frame as the `Elsewhere` eye
+  is, each into an image of its own, shown by `ShowsOther(k)` surfaces: several portals at once.
 
 ## 2026-10-14
 

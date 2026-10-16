@@ -15,7 +15,7 @@ use crate::carried::CarriedImage;
 use crate::effect::{
     EffectFactories, EffectFrame, EffectSetup, EffectTargets, GradeShader, ImageEffect, SkyFigure,
 };
-use crate::elsewhere::{Elsewhere, ElsewhereShared, ElsewhereTargets};
+use crate::elsewhere::{Elsewhere, ElsewhereShared, ElsewhereTargets, MAX_OTHER_EYES, OtherEyes};
 use crate::frame::{
     DiscBlock, LightingBlock, MAX_SKY_DISCS, PointLightBlock, SkyDiscs, ViewBlock, WorldBlock,
     uniform_bytes,
@@ -91,6 +91,8 @@ struct Targets {
     layer: LayerTargets,
     /// The other eye's image, read by the windows onto it.
     elsewhere: ElsewhereTargets,
+    /// The images of the [`OtherEyes`], each made when its eye is first set.
+    others: [Option<ElsewhereTargets>; MAX_OTHER_EYES],
     /// The late pass's depth when the opaque pass is multisampled: its depth resolved to one
     /// sample, and what reads it.
     late: Option<LateTargets>,
@@ -437,6 +439,56 @@ impl<G: GpuGeometry> RenderState<G> {
         }
     }
 
+    /// An other eye's image, `width` × `height`, in the frame's formats and sample count.
+    fn elsewhere_targets(&self, width: u32, height: u32) -> ElsewhereTargets {
+        let target = |label, format, sample_count, usage| {
+            self.gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | usage,
+                view_formats: &[],
+            })
+        };
+        let samples = self.sample_count;
+        let color = target(
+            "fk elsewhere",
+            COLOR_FORMAT,
+            1,
+            wgpu::TextureUsages::TEXTURE_BINDING,
+        )
+        .create_view(&Default::default());
+        let settings = ElsewhereShared::settings(&self.gpu);
+        ElsewhereTargets {
+            bind_group: self.elsewhere.bind_group(&self.gpu, &color, &settings),
+            color,
+            multisampled: (samples > 1).then(|| {
+                target(
+                    "fk elsewhere samples",
+                    COLOR_FORMAT,
+                    samples,
+                    wgpu::TextureUsages::empty(),
+                )
+                .create_view(&Default::default())
+            }),
+            depth: target(
+                "fk elsewhere depth",
+                DEPTH_FORMAT,
+                samples,
+                wgpu::TextureUsages::empty(),
+            )
+            .create_view(&Default::default()),
+            settings,
+        }
+    }
+
     fn resize(&mut self, width: u32, height: u32) {
         self.config.width = width;
         self.config.height = height;
@@ -511,33 +563,7 @@ impl<G: GpuGeometry> RenderState<G> {
             )
             .create_view(&Default::default()),
         };
-        let elsewhere_color = target(
-            "fk elsewhere",
-            COLOR_FORMAT,
-            1,
-            wgpu::TextureUsages::TEXTURE_BINDING,
-        )
-        .create_view(&Default::default());
-        let elsewhere = ElsewhereTargets {
-            bind_group: self.elsewhere.bind_group(&self.gpu, &elsewhere_color),
-            color: elsewhere_color,
-            multisampled: (samples > 1).then(|| {
-                target(
-                    "fk elsewhere samples",
-                    COLOR_FORMAT,
-                    samples,
-                    wgpu::TextureUsages::empty(),
-                )
-                .create_view(&Default::default())
-            }),
-            depth: target(
-                "fk elsewhere depth",
-                DEPTH_FORMAT,
-                samples,
-                wgpu::TextureUsages::empty(),
-            )
-            .create_view(&Default::default()),
-        };
+        let elsewhere = self.elsewhere_targets(width, height);
         self.settle.set_targets(&self.gpu, &color, &depth);
         let effect_targets = EffectTargets {
             color: &color,
@@ -565,6 +591,7 @@ impl<G: GpuGeometry> RenderState<G> {
             depth,
             layer,
             elsewhere,
+            others: Default::default(),
             late,
         };
         self.targets = Some(targets);
@@ -621,12 +648,27 @@ impl<G: GpuGeometry> RenderState<G> {
             .unwrap_or_default();
         let elsewhere_drawn = match (&view, other.eye) {
             (Some(view), Some(eye)) => {
-                self.elsewhere.write(&self.gpu, other.flip);
                 let seen_by = other.lighting.as_ref().unwrap_or(&lighting);
-                self.draw_elsewhere(world, view, (eye, other.clip), seen_by, &shadows, size)
+                let eye = (eye, other.clip, other.flip);
+                self.draw_elsewhere(world, view, eye, None, seen_by, &shadows, size)
             }
             _ => false,
         };
+        // Then the more eyes, each on its own.
+        let more = world
+            .get_resource::<OtherEyes<G>>()
+            .cloned()
+            .unwrap_or_default();
+        let mut others_drawn = [false; MAX_OTHER_EYES];
+        if let Some(view) = &view {
+            for (k, other) in more.0.iter().enumerate() {
+                let Some(other) = other else { continue };
+                let seen_by = other.lighting.as_ref().unwrap_or(&lighting);
+                let eye = (other.eye, other.clip, other.flip);
+                others_drawn[k] =
+                    self.draw_elsewhere(world, view, eye, Some(k), seen_by, &shadows, size);
+            }
+        }
         let shadow = view
             .as_ref()
             .filter(|_| shadows.enabled)
@@ -777,6 +819,7 @@ impl<G: GpuGeometry> RenderState<G> {
                     frame: &self.frame.bind_group,
                     shadows: &self.shadow_map.bind_group,
                     elsewhere: elsewhere_drawn.then_some(&targets.elsewhere.bind_group),
+                    others: others_bindings(targets, &others_drawn),
                 };
                 for renderer in &self.renderers {
                     renderer.render(&mut pass, &bindings);
@@ -833,6 +876,7 @@ impl<G: GpuGeometry> RenderState<G> {
                 frame: &self.frame.bind_group,
                 shadows: &self.shadow_map.bind_group,
                 elsewhere: None,
+                others: [None; MAX_OTHER_EYES],
             };
             for renderer in &self.renderers {
                 renderer.render_layer(&mut pass, &bindings);
@@ -890,6 +934,7 @@ impl<G: GpuGeometry> RenderState<G> {
                 frame: &self.frame.bind_group,
                 shadows: &self.shadow_map.bind_group,
                 elsewhere: elsewhere_drawn.then_some(&targets.elsewhere.bind_group),
+                others: others_bindings(targets, &others_drawn),
             };
             for renderer in &self.renderers {
                 renderer.render_late(&mut pass, &bindings);
@@ -980,26 +1025,39 @@ impl<G: GpuGeometry> RenderState<G> {
             frame: &self.frame.bind_group,
             shadows: &self.shadow_map.bind_group,
             elsewhere: None,
+            others: [None; MAX_OTHER_EYES],
         };
         for renderer in &self.renderers {
             renderer.encode(encoder, &bindings);
         }
     }
 
-    /// Draws the scene seen from `eye`, the [`Elsewhere`] eye, into its image and submits it:
-    /// the frame's camera and shadows from there under `lighting` (its own or the frame's), its
-    /// poses made relative to that eye. Whether it was drawn.
+    /// Draws the scene seen from `eye` (cut off at `clip`, shown upside down if `flip`) into its
+    /// image and submits it: the [`Elsewhere`] eye's for `which` `None`, else eye `which` of the
+    /// [`OtherEyes`] (its image made the first time). The frame's camera and shadows from there
+    /// under `lighting` (its own or the frame's), its poses made relative to that eye. Whether it
+    /// was drawn.
+    #[allow(clippy::too_many_arguments)]
     fn draw_elsewhere(
         &mut self,
         world: &mut World,
         view: &ActiveView<G>,
-        (eye, clip): (G::Isometry, Option<G::Isometry>),
+        (eye, clip, flip): (G::Isometry, Option<G::Isometry>, bool),
+        which: Option<usize>,
         lighting: &Lighting,
         shadows: &Shadows,
         size: WindowSize,
     ) -> bool {
-        if self.targets.is_none() {
+        let Some(targets) = &self.targets else {
             return false;
+        };
+        if let Some(k) = which
+            && targets.others[k].is_none()
+        {
+            let made = self.elsewhere_targets(self.config.width, self.config.height);
+            if let Some(targets) = &mut self.targets {
+                targets.others[k] = Some(made);
+            }
         }
         let mut other = view.clone();
         other.eye.isometry = eye;
@@ -1050,7 +1108,14 @@ impl<G: GpuGeometry> RenderState<G> {
         let Some(targets) = &self.targets else {
             return false;
         };
-        let target = &targets.elsewhere;
+        let target = match which {
+            None => &targets.elsewhere,
+            Some(k) => match &targets.others[k] {
+                Some(target) => target,
+                None => return false,
+            },
+        };
+        ElsewhereShared::write(&self.gpu, &target.settings, flip);
         let clear = wgpu::Color {
             a: 0.0,
             ..lighting.sky.horizon.into()
@@ -1078,6 +1143,7 @@ impl<G: GpuGeometry> RenderState<G> {
                 frame: &self.frame.bind_group,
                 shadows: &self.shadow_map.bind_group,
                 elsewhere: None,
+                others: [None; MAX_OTHER_EYES],
             };
             for renderer in &self.renderers {
                 renderer.render(&mut pass, &bindings);
@@ -1087,6 +1153,20 @@ impl<G: GpuGeometry> RenderState<G> {
         self.gpu.queue.submit([encoder.finish()]);
         true
     }
+}
+
+/// The bind groups of the [`OtherEyes`]' images drawn this frame (`drawn`), for the windows onto
+/// them.
+fn others_bindings<'a>(
+    targets: &'a Targets,
+    drawn: &[bool; MAX_OTHER_EYES],
+) -> [Option<&'a wgpu::BindGroup>; MAX_OTHER_EYES] {
+    std::array::from_fn(|k| {
+        targets.others[k]
+            .as_ref()
+            .filter(|_| drawn[k])
+            .map(|target| &target.bind_group)
+    })
 }
 
 /// A colour attachment cleared to `clear`: drawn into `samples` and resolved into `resolved`

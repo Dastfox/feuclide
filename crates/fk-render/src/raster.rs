@@ -13,7 +13,7 @@ use fk_scene::ViewRelative;
 use wgpu::util::DeviceExt;
 
 use crate::deform::{CastsNoShadow, Deform, Deforms};
-use crate::elsewhere::{SeenBy, ShowsElsewhere};
+use crate::elsewhere::{MAX_OTHER_EYES, SeenBy, ShowsElsewhere, ShowsOther};
 use crate::gpu::matrix_columns;
 use crate::mesh::{MeshInstances, Meshes, Vertex};
 use crate::normal_map::NormalMaps;
@@ -48,8 +48,9 @@ struct Candidate<G: Geometry> {
     data: [f32; 4],
     casts: bool,
     layer: bool,
-    /// A window onto the other eye's view.
-    window: bool,
+    /// A window onto an other eye's view: 0 the [`Elsewhere`](crate::Elsewhere) eye's, `k + 1`
+    /// eye `k` of the [`OtherEyes`](crate::OtherEyes).
+    window: Option<usize>,
     /// Which eye draws it, if only one does.
     seen_by: Option<SeenBy>,
 }
@@ -237,6 +238,7 @@ type Drawables<G> = (
     Has<CastsNoShadow>,
     Has<OnLayer>,
     Has<ShowsElsewhere>,
+    Option<&'static ShowsOther>,
     Has<Unrepeated>,
     Option<&'static SeenBy>,
 );
@@ -252,8 +254,9 @@ type Drawables<G> = (
 /// Instances within the [`Shadows`](crate::Shadows) map cast into it, unless their entity has
 /// [`CastsNoShadow`].
 ///
-/// Entities marked [`ShowsElsewhere`] are drawn after the rest, by a pipeline of their own,
-/// as windows onto the [`Elsewhere`](crate::Elsewhere) view.
+/// Entities marked [`ShowsElsewhere`] (or [`ShowsOther`]) are drawn after the rest, by a
+/// pipeline of their own, as windows onto the [`Elsewhere`](crate::Elsewhere) view (or one of
+/// the [`OtherEyes`](crate::OtherEyes)).
 pub struct RasterPipeline<G: GpuGeometry> {
     builder: Builder,
     normal_maps: GpuNormalMaps,
@@ -267,12 +270,13 @@ pub struct RasterPipeline<G: GpuGeometry> {
     bins: BTreeMap<(u32, u32), Vec<GpuInstance>>,
     shadow_bins: BTreeMap<(u32, u32), Vec<GpuInstance>>,
     layer_bins: BTreeMap<(u32, u32), Vec<GpuInstance>>,
-    window_bins: BTreeMap<(u32, u32), Vec<GpuInstance>>,
+    /// By eye, as [`Candidate::window`] numbers them.
+    window_bins: [BTreeMap<(u32, u32), Vec<GpuInstance>>; 1 + MAX_OTHER_EYES],
     instances: Option<wgpu::Buffer>,
     draws: Vec<Draw>,
     shadow_draws: Vec<Draw>,
     layer_draws: Vec<Draw>,
-    window_draws: Vec<Draw>,
+    window_draws: [Vec<Draw>; 1 + MAX_OTHER_EYES],
     /// Whether the view last queued is cut off at its clip plane.
     clipped: bool,
     stats: RenderStats,
@@ -335,12 +339,12 @@ impl<G: GpuGeometry> RasterPipeline<G> {
             bins: BTreeMap::new(),
             shadow_bins: BTreeMap::new(),
             layer_bins: BTreeMap::new(),
-            window_bins: BTreeMap::new(),
+            window_bins: Default::default(),
             instances: None,
             draws: Vec::new(),
             shadow_draws: Vec::new(),
             layer_draws: Vec::new(),
-            window_draws: Vec::new(),
+            window_draws: Default::default(),
             clipped: false,
             stats: RenderStats::default(),
             _geometry: PhantomData,
@@ -644,16 +648,23 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
             .unwrap_or_default();
         let query = self.query.get_or_insert_with(|| world.query_filtered());
         self.candidates.clear();
-        for (relative, drawable, deform, casts_none, layer, window, unrepeated, seen_by) in
+        for (relative, drawable, deform, casts_none, layer, shows, other, unrepeated, seen_by) in
             query.iter(world)
         {
+            let window = if shows {
+                Some(0)
+            } else {
+                other
+                    .filter(|other| other.0 < MAX_OTHER_EYES)
+                    .map(|other| other.0 + 1)
+            };
             let relative = view.relative(&relative.0);
             let slot = deform.map_or(0, |deform| deform.0.0 + 1);
             let slot = match self.pipelines.get(slot as usize) {
                 Some(Some(_)) => slot,
                 _ => 0,
             };
-            let copies = if unrepeated || window {
+            let copies = if unrepeated || window.is_some() {
                 &[][..]
             } else {
                 &shifts[..]
@@ -667,7 +678,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                         relative: relative.compose(&instance.pose),
                         color: instance.color.to_array(),
                         data: instance.data,
-                        casts: !casts_none && !window,
+                        casts: !casts_none && window.is_none(),
                         layer,
                         window,
                         seen_by: seen_by.copied(),
@@ -686,8 +697,8 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
             .filter(|&k| k > 0.0)
             .map(|k| std::f64::consts::PI / k.sqrt());
         for candidate in &self.candidates {
-            // No window onto the other eye's view in its own image.
-            if candidate.window && view.elsewhere.is_some() {
+            // No window onto any other eye's view in any eye's image.
+            if candidate.window.is_some() && view.elsewhere.is_some() {
                 continue;
             }
             // Drawn by one eye only.
@@ -729,9 +740,9 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                 data: candidate.data,
             };
             let key = (candidate.slot, candidate.mesh);
-            if candidate.window {
+            if let Some(eye) = candidate.window {
                 if seen {
-                    self.window_bins
+                    self.window_bins[eye]
                         .entry((0, candidate.mesh))
                         .or_default()
                         .push(instance);
@@ -762,7 +773,9 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
         stats.draws = self.draws.len();
         Self::collect(&mut self.shadow_bins, &mut all, &mut self.shadow_draws);
         Self::collect(&mut self.layer_bins, &mut all, &mut self.layer_draws);
-        Self::collect(&mut self.window_bins, &mut all, &mut self.window_draws);
+        for (bins, draws) in self.window_bins.iter_mut().zip(&mut self.window_draws) {
+            Self::collect(bins, &mut all, draws);
+        }
         self.stats = stats;
         if all.is_empty() {
             return;
@@ -803,12 +816,14 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
             pass.set_bind_group(1, bindings.shadows, &[]);
             pass.set_bind_group(2, &self.normal_maps.bind_group, &[]);
         });
-        if let Some(elsewhere) = bindings.elsewhere {
-            self.draw(pass, &self.window_draws, |pass, _| {
+        let images = std::iter::once(bindings.elsewhere).chain(bindings.others);
+        for (draws, image) in self.window_draws.iter().zip(images) {
+            let Some(image) = image else { continue };
+            self.draw(pass, draws, |pass, _| {
                 pass.set_pipeline(&self.window);
                 pass.set_bind_group(0, bindings.frame, &[]);
                 pass.set_bind_group(1, bindings.shadows, &[]);
-                pass.set_bind_group(2, elsewhere, &[]);
+                pass.set_bind_group(2, image, &[]);
             });
         }
     }
@@ -864,14 +879,27 @@ mod tests {
     }
 
     /// The scene in `world` seen from `eye` (at the root's origin), into a small target, read
-    /// back as RGBA8; with `window` set, windows show an image red above and blue below (turned
-    /// over if it is true).
+    /// back as RGBA8; with `window` set, windows onto the other eye show an image red above and
+    /// blue below (turned over if it is true).
     fn draw(
         gpu: &Gpu,
         world: &mut World,
         eye: bevy_ecs::entity::Entity,
         lighting: &Lighting,
         window: Option<bool>,
+    ) -> Vec<u8> {
+        draw_with(gpu, world, eye, lighting, window, 0)
+    }
+
+    /// As [`draw`], the image bound as eye `slot`'s: 0 the other eye's, `k + 1` that of eye `k`
+    /// of the more eyes.
+    fn draw_with(
+        gpu: &Gpu,
+        world: &mut World,
+        eye: bevy_ecs::entity::Entity,
+        lighting: &Lighting,
+        window: Option<bool>,
+        slot: usize,
     ) -> Vec<u8> {
         let (width, height) = SIZE;
         let device = &gpu.device;
@@ -959,18 +987,22 @@ mod tests {
             },
             image.size(),
         );
-        elsewhere.write(gpu, window.unwrap_or(false));
-        let bind_group = elsewhere.bind_group(gpu, &image.create_view(&Default::default()));
+        let settings = ElsewhereShared::settings(gpu);
+        ElsewhereShared::write(gpu, &settings, window.unwrap_or(false));
+        let bind_group =
+            elsewhere.bind_group(gpu, &image.create_view(&Default::default()), &settings);
 
         let color = texture(
             color_format,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         );
         let depth = texture(depth_format, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let image = window.map(|_| &bind_group);
         let bindings = FrameBindings {
             frame: &frame.bind_group,
             shadows: &shadow_map.bind_group,
-            elsewhere: window.map(|_| &bind_group),
+            elsewhere: image.filter(|_| slot == 0),
+            others: std::array::from_fn(|k| image.filter(|_| slot == k + 1)),
         };
         let mut encoder = device.create_command_encoder(&Default::default());
         {
@@ -1043,6 +1075,44 @@ mod tests {
         let flipped = draw_window(&gpu, true);
         assert_eq!(pixel(&flipped, cx, cy - 3), [0, 0, 255, 255], "turned over");
         assert_eq!(pixel(&flipped, cx, cy + 3), [255, 0, 0, 255]);
+    }
+
+    /// Headless: a window onto one of the more eyes shows that eye's image, and neither the
+    /// other eye's nor another of the more eyes'.
+    #[test]
+    fn a_window_onto_one_of_more_eyes_shows_its_image_only() {
+        let Some(gpu) = Gpu::headless() else {
+            eprintln!("no adapter, skipped");
+            return;
+        };
+        let (cx, cy) = (SIZE.0 / 2, SIZE.1 / 2);
+        let seen = |slot: usize| {
+            let mut world = World::new();
+            let mut meshes = Meshes::default();
+            let quad = meshes.add(shapes::cuboid(Vector3::new(2.0, 2.0, 0.05)).build::<E3>());
+            world.insert_resource(meshes);
+            let ahead = Isometry::exp(&E3::transvection(&Vector3::new(0.0, 0.0, -4.0)));
+            let entity = world
+                .spawn((
+                    ViewRelative::<E3>(ahead),
+                    MeshInstances::<E3>::single(quad, Color::WHITE),
+                    ShowsOther(1),
+                ))
+                .id();
+            draw_with(
+                &gpu,
+                &mut world,
+                entity,
+                &Lighting::default(),
+                Some(false),
+                slot,
+            )
+        };
+        let own = seen(2);
+        assert_eq!(pixel(&own, cx, cy - 3), [255, 0, 0, 255], "its eye's image");
+        assert_eq!(pixel(&own, cx, cy + 3), [0, 0, 255, 255]);
+        assert_eq!(pixel(&seen(0), cx, cy)[3], 0, "not the other eye's");
+        assert_eq!(pixel(&seen(1), cx, cy)[3], 0, "nor another eye's");
     }
 
     /// Headless: a wall facing the eye, lit from the side, ridged by a normal map along x: its

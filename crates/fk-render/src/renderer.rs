@@ -56,8 +56,9 @@ pub struct FrameView<'a, G: GpuGeometry> {
     pub frustum: Frustum,
     /// The shadow map this frame, when shadows are drawn: which casters to draw into it.
     pub shadow: Option<ShadowView>,
-    /// Set when this is the image of the [`Elsewhere`](crate::Elsewhere) eye, drawn before the
-    /// frame: that eye relative to the active camera's, inverted (`elsewhere⁻¹ ∘ eye`).
+    /// Set when this is the image of the [`Elsewhere`](crate::Elsewhere) eye, or of one of the
+    /// [`OtherEyes`](crate::OtherEyes), drawn before the frame: that eye relative to the
+    /// active camera's, inverted (`elsewhere⁻¹ ∘ eye`).
     /// Poses relative to the active camera ([`ViewRelative`](fk_scene::ViewRelative)) are
     /// composed with it first, and windows onto it ([`ShowsElsewhere`](crate::ShowsElsewhere))
     /// are not drawn. [`view`](Self::view) is then the other eye's.
@@ -87,6 +88,8 @@ pub struct FrameBindings<'a> {
     /// Group 2 for pipelines drawing windows onto the [`Elsewhere`](crate::Elsewhere) view,
     /// when it was drawn this frame; `None` otherwise, and then windows are not drawn.
     pub elsewhere: Option<&'a wgpu::BindGroup>,
+    /// The same for each of the [`OtherEyes`](crate::OtherEyes), when it was drawn this frame.
+    pub others: [Option<&'a wgpu::BindGroup>; crate::MAX_OTHER_EYES],
 }
 
 /// One way of drawing a geometry into the opaque pass: the raster pipeline, later the ray

@@ -1088,14 +1088,18 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
             .is_some_and(|post| post.settle.frames > 1.0);
         let half_size = view.size.map(|n| n.div_ceil(2).max(1));
         // How the eye moved since the last frame, and which tile of four is marched.
+        // An other eye's image neither carries from nor moves on the frame's own history.
+        let elsewhere = view.elsewhere.is_some();
         let eye = view.view.eye.isometry;
         let carry = self
             .last_eye
+            .filter(|_| !elsewhere)
             .map(|last| G::isometry_matrix(&last.inverse().compose(&eye)));
-        self.last_eye = Some(eye);
-        self.frame = self.frame.wrapping_add(1);
+        if !elsewhere {
+            self.last_eye = Some(eye);
+            self.frame = self.frame.wrapping_add(1);
+        }
         // In the other eye's image no effect runs: what is drawn late is drawn as the others.
-        let elsewhere = view.elsewhere.is_some();
         self.elsewhere = elsewhere;
         let is_late = |marched: &RayMarched| marched.late && !elsewhere;
         // Whether the eye moved more than about a pixel since the last frame.
@@ -1106,9 +1110,12 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
             .get_resource::<QuotientView<G>>()
             .map(|space| Fold::new(space, &view.view.eye.isometry));
         let query = self.query.get_or_insert_with(|| world.query_filtered());
+        // An interleaved scene carries its own last frame: it is left out of the other eyes'
+        // images, which would draw over it.
         let scenes: Vec<_> = query
             .iter(world)
             .filter(|(_, marched, _, _)| marched.scale > 0.0)
+            .filter(|(_, marched, _, _)| !(elsewhere && marched.interleave > 1))
             .map(|(relative, marched, layer, unrepeated)| {
                 let fold = fold.filter(|_| !unrepeated).unwrap_or_default();
                 (view.relative(&relative.0), marched.clone(), layer, fold)
@@ -1885,6 +1892,7 @@ fn sdf_color(q: vec3<f32>) -> vec3<f32> {
             frame: &frame.bind_group,
             shadows: &shadow_map.bind_group,
             elsewhere: None,
+            others: [None; crate::MAX_OTHER_EYES],
         };
         let mut encoder = device.create_command_encoder(&Default::default());
         for frame in 0..frames {

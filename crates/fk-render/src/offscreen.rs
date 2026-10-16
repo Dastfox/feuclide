@@ -192,6 +192,7 @@ impl<G: GpuGeometry> Offscreen<G> {
             frame: &self.frame.bind_group,
             shadows: &self.shadow_map.bind_group,
             elsewhere: None,
+            others: [None; crate::MAX_OTHER_EYES],
         };
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
         for renderer in &renderers {

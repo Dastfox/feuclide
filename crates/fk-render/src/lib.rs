@@ -13,7 +13,8 @@
 //! 0. **Elsewhere.** When an [`Elsewhere`] eye is set, the scene is first drawn from it (its
 //!    shadows, its opaque pass) into an image of the window's size, and submitted. Surfaces
 //!    marked [`ShowsElsewhere`] show that image in the frame's opaque pass: a portal's
-//!    opening, a mirror.
+//!    opening, a mirror. So for each of the [`OtherEyes`] that is set, its image shown by the
+//!    surfaces marked [`ShowsOther`] with its number: several portals at once.
 //! 1. **Visibility.** Every [`GeometryRenderer`] extracts what it draws and culls it. The
 //!    raster pipeline composes each instance camera-relative in `f64`
 //!    (`view⁻¹ ∘ entity ∘ instance`) and tests its mesh's geodesic bounding ball against the
@@ -96,7 +97,9 @@ pub use effect::{
     EffectFactory, EffectFrame, EffectSetup, EffectTargets, GradeShader, ImageEffect, SkyFigure,
     add_image_effect, validate_effect,
 };
-pub use elsewhere::{Elsewhere, SeenBy, ShowsElsewhere};
+pub use elsewhere::{
+    Elsewhere, MAX_OTHER_EYES, OtherEye, OtherEyes, SeenBy, ShowsElsewhere, ShowsOther,
+};
 pub use frame::{
     DiscShape, FrameCapture, Gauge, GradeValues, LayerRender, Lighting, MAX_SKY_DISCS,
     Multisampling, PostMode, PostSettings, RenderStats, Settle, Shadows, Sky, SkyDisc, SkyDiscs,
@@ -175,6 +178,7 @@ impl<G: GpuGeometry> Plugin for RenderPlugin<G> {
             .init_resource::<Screenshots>()
             .init_resource::<CarriedImage>()
             .init_resource::<Elsewhere<G>>()
+            .init_resource::<OtherEyes<G>>()
             .init_resource::<Overlay>()
             .add_systems(Startup, graph::start::<G>)
             .add_systems(Update, (screenshot::capture_once, perf::record))

@@ -70,6 +70,90 @@ impl<G: Geometry> std::fmt::Debug for Elsewhere<G> {
     }
 }
 
+/// How many more eyes [`OtherEyes`] holds, besides the [`Elsewhere`] eye.
+pub const MAX_OTHER_EYES: usize = 3;
+
+/// One more eye the scene is drawn from before each frame, as the [`Elsewhere`] eye is (its
+/// fields mean the same), shown by the surfaces marked [`ShowsOther`] with its number.
+pub struct OtherEye<G: Geometry> {
+    /// Its global pose.
+    pub eye: G::Isometry,
+    /// Whether its image is shown upside down.
+    pub flip: bool,
+    /// The light, the sky and the fog it sees by; `None` for the frame's.
+    pub lighting: Option<Lighting>,
+    /// What it sees is cut off at the plane `z = 0` of this frame, keeping its `+z` side, in
+    /// the raster path; `None` for all of it.
+    pub clip: Option<G::Isometry>,
+}
+
+impl<G: Geometry> OtherEye<G> {
+    /// An eye at `eye`, the right way up, under the frame's light, cut off nowhere.
+    pub fn at(eye: G::Isometry) -> Self {
+        Self {
+            eye,
+            flip: false,
+            lighting: None,
+            clip: None,
+        }
+    }
+}
+
+impl<G: Geometry> Clone for OtherEye<G> {
+    fn clone(&self) -> Self {
+        Self {
+            eye: self.eye,
+            flip: self.flip,
+            lighting: self.lighting.clone(),
+            clip: self.clip,
+        }
+    }
+}
+
+impl<G: Geometry> std::fmt::Debug for OtherEye<G> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OtherEye")
+            .field("eye", &self.eye)
+            .field("flip", &self.flip)
+            .field("lighting", &self.lighting)
+            .field("clip", &self.clip)
+            .finish()
+    }
+}
+
+/// More eyes the scene is drawn from before each frame, besides the [`Elsewhere`] eye, as a
+/// resource: up to [`MAX_OTHER_EYES`], each drawn as that one is (its own shadows, prepare and
+/// submit, at the window's size) into an image of its own, which the surfaces marked
+/// [`ShowsOther`] with its number show. Several portals seen at once, each its own carried eye,
+/// one level deep: no window onto any eye is drawn in any eye's image. An eye's image is only
+/// made once the eye is first set; each costs about a frame without its effects.
+#[derive(Resource)]
+pub struct OtherEyes<G: Geometry>(pub [Option<OtherEye<G>>; MAX_OTHER_EYES]);
+
+impl<G: Geometry> Default for OtherEyes<G> {
+    fn default() -> Self {
+        Self(std::array::from_fn(|_| None))
+    }
+}
+
+impl<G: Geometry> Clone for OtherEyes<G> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<G: Geometry> std::fmt::Debug for OtherEyes<G> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("OtherEyes").field(&self.0).finish()
+    }
+}
+
+/// Draws an entity's meshes as windows onto eye `k` of [`OtherEyes`] (from 0), as
+/// [`ShowsElsewhere`] does onto the [`Elsewhere`] eye: not drawn while that eye is not set, nor
+/// in any eye's image, casting no shadow. With both, [`ShowsElsewhere`] wins.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShowsOther(pub usize);
+
 /// Draws an entity's meshes as windows onto the [`Elsewhere`] view: each pixel of them shows
 /// what the other eye sees at that pixel, times the instance's colour (white for all of it),
 /// unlit and unfogged, since that image has its own light and fog. A portal's opening, a
@@ -78,20 +162,22 @@ impl<G: Geometry> std::fmt::Debug for Elsewhere<G> {
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ShowsElsewhere;
 
-/// Which eye draws an entity's meshes in the raster path; without it, both do. A thing missing
-/// from a mirror is seen by the [`Eye`](Self::Eye) only; a thing only a mirror or a portal shows,
-/// by the other eye ([`Elsewhere`](Self::Elsewhere)) only. Seen by the other eye only, it casts
-/// no shadow into the frame's own image.
+/// Which eye draws an entity's meshes in the raster path; without it, every eye does. A thing
+/// missing from a mirror is seen by the [`Eye`](Self::Eye) only; a thing only a mirror or a
+/// portal shows, by the other eyes ([`Elsewhere`](Self::Elsewhere): the [`Elsewhere`] eye and
+/// [`OtherEyes`]) only. Seen by the other eyes only, it casts no shadow into the frame's own
+/// image.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SeenBy {
     /// Only the frame's own eye: left out of the [`Elsewhere`] image.
     Eye,
-    /// Only the [`Elsewhere`] eye: left out of the frame's own image.
+    /// Only the other eyes, the [`Elsewhere`] eye and [`OtherEyes`]: left out of the frame's
+    /// own image.
     Elsewhere,
 }
 
-/// The other eye's image: what the opaque pass draws into, with the frame's formats and sample
-/// count, and the bind group the windows read it through.
+/// An other eye's image: what the opaque pass draws into, with the frame's formats and sample
+/// count, and the bind group the windows read it through, with its settings.
 pub(crate) struct ElsewhereTargets {
     /// The resolved image the windows read.
     pub color: wgpu::TextureView,
@@ -99,6 +185,8 @@ pub(crate) struct ElsewhereTargets {
     pub multisampled: Option<wgpu::TextureView>,
     pub depth: wgpu::TextureView,
     pub bind_group: wgpu::BindGroup,
+    /// `(flip, 0, 0, 0)`, read through `bind_group`.
+    pub settings: wgpu::Buffer,
 }
 
 /// Group 2 of the window pipeline: the image, its sampler and `(flip, 0, 0, 0)`.
@@ -136,11 +224,10 @@ pub(crate) fn layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     })
 }
 
-/// What the windows read the image with: its sampler and settings.
+/// What the windows read an image with: the layout and the sampler.
 pub(crate) struct ElsewhereShared {
     pub layout: wgpu::BindGroupLayout,
     pub sampler: wgpu::Sampler,
-    pub settings: wgpu::Buffer,
 }
 
 impl ElsewhereShared {
@@ -156,24 +243,33 @@ impl ElsewhereShared {
                 min_filter: wgpu::FilterMode::Linear,
                 ..Default::default()
             }),
-            settings: device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("fk elsewhere"),
-                size: 16,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
         }
     }
 
-    /// Writes whether the image is shown upside down.
-    pub fn write(&self, gpu: &Gpu, flip: bool) {
-        let settings = [f32::from(u8::from(flip)), 0.0, 0.0, 0.0];
-        gpu.queue
-            .write_buffer(&self.settings, 0, bytemuck::cast_slice(&settings));
+    /// An image's settings, `(flip, 0, 0, 0)`.
+    pub fn settings(gpu: &Gpu) -> wgpu::Buffer {
+        gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fk elsewhere"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
     }
 
-    /// The bind group reading `color`.
-    pub fn bind_group(&self, gpu: &Gpu, color: &wgpu::TextureView) -> wgpu::BindGroup {
+    /// Writes whether the image is shown upside down into its `settings`.
+    pub fn write(gpu: &Gpu, settings: &wgpu::Buffer, flip: bool) {
+        let values = [f32::from(u8::from(flip)), 0.0, 0.0, 0.0];
+        gpu.queue
+            .write_buffer(settings, 0, bytemuck::cast_slice(&values));
+    }
+
+    /// The bind group reading `color` with `settings`.
+    pub fn bind_group(
+        &self,
+        gpu: &Gpu,
+        color: &wgpu::TextureView,
+        settings: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
         gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("fk elsewhere"),
             layout: &self.layout,
@@ -188,7 +284,7 @@ impl ElsewhereShared {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.settings.as_entire_binding(),
+                    resource: settings.as_entire_binding(),
                 },
             ],
         })
