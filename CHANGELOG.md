@@ -9,6 +9,8 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 
 ## Unreleased
 
+- fk-physics: `move_through` finds the way out of a surface with three samples of the field
+  rather than six (forward differences), once a step.
 - fk-render: `RayMarched::late`, a scene drawn after the image effects, over the image as they
   left it, against the opaque depth (resolved to one sample when multisampled).
 - fk-render: a vertex shade (`MeshBuilder::shade`, carried by `Kit`, which numbers its parts),
