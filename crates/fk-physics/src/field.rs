@@ -68,19 +68,18 @@ impl<G: Geometry> FieldBody<'_, G> {
             - self.shape.radius
     }
 
-    /// The direction, in body coordinates, in which the room grows fastest at `offset`, where
-    /// it is `here`: three more samples, one a step along each axis.
+    /// The direction, in body coordinates, in which the room grows fastest at `offset`: six
+    /// samples, a step either way along each axis.
     fn away(
         &self,
         field: &(impl DistanceField<G> + ?Sized),
         offset: &Vector3<Real>,
-        here: Real,
     ) -> Vector3<Real> {
         let h = 0.5 * self.shape.radius;
         let gradient = Vector3::from_fn(|i, _| {
             let mut e = Vector3::zeros();
             e[i] = h;
-            self.room(field, &(offset + e)) - here
+            self.room(field, &(offset + e)) - self.room(field, &(offset - e))
         });
         gradient.try_normalize(1e-300).unwrap_or_else(Vector3::y)
     }
@@ -101,7 +100,7 @@ impl<G: Geometry> FieldBody<'_, G> {
             let mut away = None;
             if room < skin {
                 // Against the surface: out to the skin, and only along it from here.
-                let normal = self.away(field, &moved, room);
+                let normal = self.away(field, &moved);
                 moved += normal * (skin - room);
                 let into = left.dot(&normal);
                 if into < 0.0 {
@@ -118,7 +117,7 @@ impl<G: Geometry> FieldBody<'_, G> {
             let safe = (room - 0.5 * skin).max(0.25 * skin);
             let limit = if room < 4.0 * skin {
                 // The way out found as it was pushed out, else here.
-                let normal = away.unwrap_or_else(|| self.away(field, &moved, room));
+                let normal = away.unwrap_or_else(|| self.away(field, &moved));
                 let approach = -(left / length).dot(&normal);
                 safe / approach.max(0.05)
             } else {
