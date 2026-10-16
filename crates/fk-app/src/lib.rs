@@ -40,7 +40,9 @@ pub use progress::Progress;
 pub use runner::RunError;
 pub use schedule::{FixedUpdate, PostUpdate, PreUpdate, Render, Startup, Update};
 pub use time::Time;
-pub use window::{AppExit, Handover, Splash, WindowConfig, WindowHandle, WindowMode, WindowSize};
+pub use window::{
+    AppExit, Handover, Icon, Splash, WindowConfig, WindowHandle, WindowMode, WindowSize,
+};
 
 /// The platform's per-user configuration directory for the application `app_name`, for example
 /// `~/.config/<name>` on Linux or `%APPDATA%\<name>\config` on Windows.

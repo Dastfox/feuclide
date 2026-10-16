@@ -23,6 +23,8 @@ pub struct WindowConfig {
     pub fullscreen: bool,
     /// What shows while the app starts, if anything: see [`Splash`].
     pub splash: Option<Splash>,
+    /// The window's icon (title bar, taskbar, task switcher), if any: see [`Icon`].
+    pub icon: Option<Icon>,
 }
 
 impl Default for WindowConfig {
@@ -33,6 +35,7 @@ impl Default for WindowConfig {
             frame_rate_cap: None,
             fullscreen: false,
             splash: None,
+            icon: None,
         }
     }
 }
@@ -47,6 +50,18 @@ pub struct Splash {
     /// Height in physical pixels.
     pub height: u32,
     /// Opaque sRGB RGBA, row by row from the top, `width × height × 4` bytes.
+    pub pixels: Arc<[u8]>,
+}
+
+/// The window's icon, given to the platform as it opens (the splash's window wears it too).
+/// Platforms that take the icon from the executable instead (macOS, Wayland) ignore it.
+#[derive(Clone, Debug)]
+pub struct Icon {
+    /// Width in physical pixels.
+    pub width: u32,
+    /// Height in physical pixels.
+    pub height: u32,
+    /// sRGB RGBA, straight alpha, row by row from the top, `width × height × 4` bytes.
     pub pixels: Arc<[u8]>,
 }
 

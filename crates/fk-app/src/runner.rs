@@ -21,7 +21,7 @@ use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 use crate::App;
 use crate::input::{CursorGrab, RawInput};
 use crate::pad::Pads;
-use crate::window::{AppExit, Handover, Splash, WindowHandle, WindowMode, WindowSize};
+use crate::window::{AppExit, Handover, Icon, Splash, WindowHandle, WindowMode, WindowSize};
 
 /// Why [`App::run`] stopped early.
 #[derive(Debug)]
@@ -348,6 +348,13 @@ fn set_grab(window: &Window, grab: bool, hidden: bool) -> bool {
     }
 }
 
+/// `icon` as the platform takes it; `None` (and a warning) if it is not what it says.
+fn window_icon(icon: &Icon) -> Option<winit::window::Icon> {
+    winit::window::Icon::from_rgba(icon.pixels.to_vec(), icon.width, icon.height)
+        .inspect_err(|error| tracing::warn!("the window's icon is not shown: {error}"))
+        .ok()
+}
+
 /// The [`Splash`] in its window, put there by the CPU.
 struct SplashWindow {
     window: Arc<Window>,
@@ -358,7 +365,12 @@ struct SplashWindow {
 impl SplashWindow {
     /// Opens `splash` in a borderless window in the middle of the primary monitor and shows
     /// it at once; `None` (and a warning) if the platform will not.
-    fn open(event_loop: &ActiveEventLoop, title: &str, splash: &Splash) -> Option<Self> {
+    fn open(
+        event_loop: &ActiveEventLoop,
+        title: &str,
+        splash: &Splash,
+        icon: Option<winit::window::Icon>,
+    ) -> Option<Self> {
         let (Some(width), Some(height)) = (
             NonZeroU32::new(splash.width),
             NonZeroU32::new(splash.height),
@@ -377,6 +389,7 @@ impl SplashWindow {
             .with_title(title)
             .with_decorations(false)
             .with_resizable(false)
+            .with_window_icon(icon)
             .with_inner_size(PhysicalSize::new(splash.width, splash.height));
         if let Some(monitor) = event_loop
             .primary_monitor()
@@ -436,13 +449,15 @@ impl ApplicationHandler for Runner {
             return;
         }
         let config = self.app.window_config();
+        let icon = config.icon.as_ref().and_then(window_icon);
         self.splash = config
             .splash
             .as_ref()
-            .and_then(|splash| SplashWindow::open(event_loop, &config.title, splash));
+            .and_then(|splash| SplashWindow::open(event_loop, &config.title, splash, icon.clone()));
         // Behind a splash, hidden until its first frame is drawn: never an empty window.
         let attributes = Window::default_attributes()
             .with_title(config.title.clone())
+            .with_window_icon(icon)
             .with_inner_size(LogicalSize::new(config.size.0, config.size.1))
             .with_visible(self.splash.is_none());
         let window = match event_loop.create_window(attributes) {
