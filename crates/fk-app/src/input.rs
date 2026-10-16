@@ -491,6 +491,7 @@ impl RawInput {
     pub(crate) fn end_frame(&mut self) {
         self.keys.end_frame();
         self.mouse_buttons.end_frame();
+        self.pad_buttons.end_frame();
         self.mouse_motion = Vector2::zeros();
         self.wheel = Vector2::zeros();
         self.typed.clear();
@@ -579,6 +580,18 @@ mod tests {
         assert!(input.held(KeyCode::KeyW.into()) && !input.just_pressed(KeyCode::KeyW.into()));
         input.release(KeyCode::KeyW);
         assert!(!input.held(KeyCode::KeyW.into()) && input.just_released(KeyCode::KeyW.into()));
+    }
+
+    #[test]
+    fn pad_edges_last_one_frame() {
+        let mut input = RawInput::default();
+        input.press(PadButton::South);
+        input.end_frame();
+        assert!(!input.just_pressed(PadButton::South.into()));
+        input.release(PadButton::South);
+        input.end_frame();
+        assert!(!input.just_released(PadButton::South.into()));
+        assert!(!input.just_pressed(PadButton::South.into()));
     }
 
     #[test]
