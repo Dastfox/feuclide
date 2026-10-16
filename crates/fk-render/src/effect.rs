@@ -145,16 +145,25 @@ pub struct EffectTargets<'a> {
 }
 
 /// A fullscreen pass of the caller's own over the image, after the opaque pass (and the
-/// [`Settle`](crate::Settle)) and before the post pass: an inked look, a datamosh, a
-/// crossfade. It reads the image and its depth and writes the image back (drawing into a
-/// target of its own and copying it over the image), so every later effect and the post pass
-/// read what it made. Effects run in the order they were added ([`add_image_effect`]).
+/// [`Settle`](crate::Settle), unless it is [`settled`](Self::settled)) and before the post
+/// pass: an inked look, a datamosh, a crossfade. It reads the image and its depth and writes
+/// the image back (drawing into a target of its own and copying it over the image), so every
+/// later effect and the post pass read what it made. Effects run in the order they were added
+/// ([`add_image_effect`]), the settled ones first.
 pub trait ImageEffect: Send + Sync + 'static {
     /// Its name, for the GPU timings of a performance recording.
     fn label(&self) -> &'static str;
 
     /// Points it at the targets, when they are made and after every resize.
     fn set_targets(&mut self, gpu: &Gpu, targets: &EffectTargets<'_>);
+
+    /// Whether it is drawn before the [`Settle`](crate::Settle) and settled with the image:
+    /// drawn each frame through another point of its pixels, what it draws averages out over
+    /// frames as the image does (lines found in the depth stop coming in stairs and crawling).
+    /// False by default: drawn on the settled image, crisp.
+    fn settled(&self) -> bool {
+        false
+    }
 
     /// Reads what this frame does from the world and uploads it, before anything is drawn.
     fn prepare(&mut self, gpu: &Gpu, world: &mut World, frame: &EffectFrame);

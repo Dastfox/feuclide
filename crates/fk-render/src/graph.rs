@@ -1,6 +1,7 @@
 //! The render graph: surface, targets and the fixed pass order
 //! (the other eye's image, when there is one) → visibility → opaque → layer (while it is
-//! enabled) → settle → the caller's image effects → late (when anything is) → post → UI.
+//! enabled) → the caller's image effects settled with the image → settle → the other image
+//! effects → late (when anything is) → post → UI.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -884,19 +885,24 @@ impl<G: GpuGeometry> RenderState<G> {
         }
         self.timer.mark(&mut encoder, "layer");
 
-        // Settled over frames, before the image effects, which work on the settled image.
-        self.settle
-            .render(&mut encoder, &targets.color, &self.frame.bind_group);
-        self.timer.mark(&mut encoder, "settle");
-
-        // The caller's image effects, in order.
+        // The caller's image effects, in order: those settled with the image first, then the
+        // settling over frames, then the rest, which work on the settled image.
         let effect_targets = EffectTargets {
             color: &targets.color,
             depth: &targets.depth,
         };
-        for effect in &mut self.effects {
-            effect.render(&mut encoder, &effect_targets, &self.frame.bind_group);
-            self.timer.mark(&mut encoder, effect.label());
+        for settled in [true, false] {
+            if !settled {
+                self.settle
+                    .render(&mut encoder, &targets.color, &self.frame.bind_group);
+                self.timer.mark(&mut encoder, "settle");
+            }
+            for effect in &mut self.effects {
+                if effect.settled() == settled {
+                    effect.render(&mut encoder, &effect_targets, &self.frame.bind_group);
+                    self.timer.mark(&mut encoder, effect.label());
+                }
+            }
         }
 
         // Late: what is drawn over the image as the effects left it, against the depth as the
