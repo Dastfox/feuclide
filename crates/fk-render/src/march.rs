@@ -1853,6 +1853,7 @@ fn sdf_color(q: vec3<f32>) -> vec3<f32> {
             frustum: Frustum::new(fov, aspect, 100.0),
             shadow: None,
             elsewhere: None,
+            clipped: false,
         };
         let size = WindowSize {
             width,

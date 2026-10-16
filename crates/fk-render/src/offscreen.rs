@@ -162,6 +162,7 @@ impl<G: GpuGeometry> Offscreen<G> {
             frustum: Frustum::new(camera.fov_y, aspect, camera.far),
             shadow: None,
             elsewhere: None,
+            clipped: false,
         };
         let size = WindowSize {
             width,

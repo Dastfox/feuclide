@@ -61,9 +61,11 @@ struct Draw {
     instances: Range<u32>,
 }
 
-/// The two pipelines of one deform: the painted surfaces and the shadow casters.
+/// The pipelines of one deform: the painted surfaces, the same cut off at the view's clip
+/// plane (for the other eye's image) and the shadow casters.
 struct Pipelines {
     opaque: wgpu::RenderPipeline,
+    clipped: wgpu::RenderPipeline,
     shadow: wgpu::RenderPipeline,
 }
 
@@ -271,6 +273,8 @@ pub struct RasterPipeline<G: GpuGeometry> {
     shadow_draws: Vec<Draw>,
     layer_draws: Vec<Draw>,
     window_draws: Vec<Draw>,
+    /// Whether the view last queued is cut off at its clip plane.
+    clipped: bool,
     stats: RenderStats,
     _geometry: PhantomData<fn() -> G>,
 }
@@ -337,6 +341,7 @@ impl<G: GpuGeometry> RasterPipeline<G> {
             shadow_draws: Vec::new(),
             layer_draws: Vec::new(),
             window_draws: Vec::new(),
+            clipped: false,
             stats: RenderStats::default(),
             _geometry: PhantomData,
         }
@@ -516,41 +521,44 @@ impl Builder {
             6 => Float32x4, 7 => Float32x4,
         ];
         let buffers = vertex_layouts(&vertex_attributes, &instance_attributes);
-        let opaque = self
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&self.opaque_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vertex"),
-                    compilation_options: Default::default(),
-                    buffers: &buffers,
-                },
-                primitive: wgpu::PrimitiveState {
-                    cull_mode: Some(wgpu::Face::Back),
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: self.depth_format,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::Greater),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: wgpu::MultisampleState {
-                    count: self.sample_count,
-                    ..Default::default()
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fragment"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(self.color_format.into())],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
+        let painted = |fragment: &str| {
+            self.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&self.opaque_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vertex"),
+                        compilation_options: Default::default(),
+                        buffers: &buffers,
+                    },
+                    primitive: wgpu::PrimitiveState {
+                        cull_mode: Some(wgpu::Face::Back),
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: self.depth_format,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(wgpu::CompareFunction::Greater),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: wgpu::MultisampleState {
+                        count: self.sample_count,
+                        ..Default::default()
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some(fragment),
+                        compilation_options: Default::default(),
+                        targets: &[Some(self.color_format.into())],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+        };
+        let opaque = painted("fragment");
+        let clipped = painted("clipped_fragment");
         let shadow = self
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -584,7 +592,11 @@ impl Builder {
                 multiview_mask: None,
                 cache: None,
             });
-        Pipelines { opaque, shadow }
+        Pipelines {
+            opaque,
+            clipped,
+            shadow,
+        }
     }
 }
 
@@ -668,6 +680,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
     fn queue(&mut self, gpu: &Gpu, view: &FrameView<'_, G>) {
         let origin = G::origin();
         let mut stats = RenderStats::default();
+        self.clipped = view.clipped;
         // On a sphere every instance is seen twice, the second time the long way round.
         let antipode = G::constant_curvature()
             .filter(|&k| k > 0.0)
@@ -781,7 +794,11 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
 
     fn render(&self, pass: &mut wgpu::RenderPass<'_>, bindings: &FrameBindings<'_>) {
         self.draw(pass, &self.draws, |pass, pipelines| {
-            pass.set_pipeline(&pipelines.opaque);
+            pass.set_pipeline(if self.clipped {
+                &pipelines.clipped
+            } else {
+                &pipelines.opaque
+            });
             pass.set_bind_group(0, bindings.frame, &[]);
             pass.set_bind_group(1, bindings.shadows, &[]);
             pass.set_bind_group(2, &self.normal_maps.bind_group, &[]);
@@ -889,6 +906,7 @@ mod tests {
             frustum: Frustum::new(fov, aspect, 100.0),
             shadow: None,
             elsewhere: None,
+            clipped: false,
         };
         let size = WindowSize {
             width,

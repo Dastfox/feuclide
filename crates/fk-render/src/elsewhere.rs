@@ -29,6 +29,12 @@ pub struct Elsewhere<G: Geometry> {
     /// lies through a portal under another hour, a mirror showing another sky. `None` (the
     /// default) for the frame's.
     pub lighting: Option<Lighting>,
+    /// What it sees is cut off at a plane: a frame whose plane `z = 0` (spanned by the
+    /// origin's frame vectors 0 and 1) keeps only what lies on the side its `+z` points to, in
+    /// the raster path. A portal's mouth, so that nothing between the eye carried across and
+    /// the mouth stands in its way. `None` (the default) for all of it. The ray marcher does
+    /// not cut its fields.
+    pub clip: Option<G::Isometry>,
 }
 
 impl<G: Geometry> Default for Elsewhere<G> {
@@ -37,6 +43,7 @@ impl<G: Geometry> Default for Elsewhere<G> {
             eye: None,
             flip: false,
             lighting: None,
+            clip: None,
         }
     }
 }
@@ -47,6 +54,7 @@ impl<G: Geometry> Clone for Elsewhere<G> {
             eye: self.eye,
             flip: self.flip,
             lighting: self.lighting.clone(),
+            clip: self.clip,
         }
     }
 }
@@ -57,6 +65,7 @@ impl<G: Geometry> std::fmt::Debug for Elsewhere<G> {
             .field("eye", &self.eye)
             .field("flip", &self.flip)
             .field("lighting", &self.lighting)
+            .field("clip", &self.clip)
             .finish()
     }
 }

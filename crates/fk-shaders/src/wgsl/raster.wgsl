@@ -126,6 +126,20 @@ fn mapped_normal(p: vec4<f32>, normal: vec4<f32>, uv: vec4<f32>, tangent: vec4<f
 
 @fragment
 fn fragment(in: Varyings) -> @location(0) vec4<f32> {
+    return paint(in);
+}
+
+// The same, cut off at the view's clip plane: what lies behind it is not drawn. A pipeline of
+// its own, so that the frame's own never discards.
+@fragment
+fn clipped_fragment(in: Varyings) -> @location(0) vec4<f32> {
+    if dot(view.clip, in.point) < 0.0 {
+        discard;
+    }
+    return paint(in);
+}
+
+fn paint(in: Varyings) -> vec4<f32> {
     let p = geo_normalize_point(in.point);
     let far_side = in.side > 0.5;
     let d = geo_seen_distance(p, far_side);

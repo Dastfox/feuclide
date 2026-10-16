@@ -478,6 +478,9 @@ pub(crate) struct ViewBlock {
     pub size: Vec2f,
     /// Where in its pixel this frame's rays and vertices go through, pixels from its middle.
     pub jitter: Vec2f,
+    /// A linear form on embedded points in the eye's frame: the clipped raster pipelines drop
+    /// what it takes below 0 ([`Elsewhere::clip`](crate::Elsewhere::clip)). Zero for none.
+    pub clip: Vec4f,
 }
 
 #[derive(ShaderType)]

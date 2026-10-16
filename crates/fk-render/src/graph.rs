@@ -623,7 +623,7 @@ impl<G: GpuGeometry> RenderState<G> {
             (Some(view), Some(eye)) => {
                 self.elsewhere.write(&self.gpu, other.flip);
                 let seen_by = other.lighting.as_ref().unwrap_or(&lighting);
-                self.draw_elsewhere(world, view, eye, seen_by, &shadows, size)
+                self.draw_elsewhere(world, view, (eye, other.clip), seen_by, &shadows, size)
             }
             _ => false,
         };
@@ -699,6 +699,7 @@ impl<G: GpuGeometry> RenderState<G> {
                 frustum: Frustum::new(view.camera.fov_y, aspect, view.camera.far),
                 shadow,
                 elsewhere: None,
+                clipped: false,
             };
             for renderer in &mut self.renderers {
                 renderer.prepare(&self.gpu, world, &frame_view);
@@ -992,7 +993,7 @@ impl<G: GpuGeometry> RenderState<G> {
         &mut self,
         world: &mut World,
         view: &ActiveView<G>,
-        eye: G::Isometry,
+        (eye, clip): (G::Isometry, Option<G::Isometry>),
         lighting: &Lighting,
         shadows: &Shadows,
         size: WindowSize,
@@ -1010,7 +1011,7 @@ impl<G: GpuGeometry> RenderState<G> {
         if shadow.is_some() {
             self.shadow_map.resize(&self.gpu, shadows.size);
         }
-        let blocks = frame_blocks(
+        let mut blocks = frame_blocks(
             world,
             Some(&other),
             lighting,
@@ -1018,6 +1019,9 @@ impl<G: GpuGeometry> RenderState<G> {
             self.shadow_map.size,
             size,
         );
+        if let Some(clip) = &clip {
+            blocks.view.clip = clip_form::<G>(&eye, clip);
+        }
         self.frame.write(&self.gpu.queue, &blocks);
         let aspect = Real::from(size.width) / Real::from(size.height);
         let frame_view = FrameView {
@@ -1027,6 +1031,7 @@ impl<G: GpuGeometry> RenderState<G> {
             frustum: Frustum::new(other.camera.fov_y, aspect, other.camera.far),
             shadow,
             elsewhere: Some(shift),
+            clipped: clip.is_some(),
         };
         for renderer in &mut self.renderers {
             renderer.prepare(&self.gpu, world, &frame_view);
@@ -1114,6 +1119,17 @@ fn color_attachment<'a>(
     }
 }
 
+/// The plane `z = 0` of `clip` as a linear form on points embedded in the frame of `eye`,
+/// positive on the side its `+z` points to: the form reading the frame's own `z`, carried by
+/// `eye⁻¹ ∘ clip`'s matrix `A` as `A⁻ᵀ` (a point `p` of the eye's frame is `A⁻¹ p` in the
+/// clip's).
+fn clip_form<G: GpuGeometry>(eye: &G::Isometry, clip: &G::Isometry) -> Vec4f {
+    let z = G::embed_tangent(&G::origin(), &G::origin_frame(2));
+    let to_clip = G::isometry_matrix(&clip.inverse().compose(eye));
+    let form = to_clip.transpose() * z;
+    Vec4f(form.map(|c| c as f32).into())
+}
+
 /// The three blocks of bind group 0.
 pub(crate) struct FrameBlocks {
     view: ViewBlock,
@@ -1143,6 +1159,7 @@ pub(crate) fn frame_blocks<G: GpuGeometry>(
         far: far as f32,
         size: Vec2f([width, height]),
         jitter: Vec2f([0.0; 2]),
+        clip: Vec4f([0.0; 4]),
     };
 
     let origin = G::origin();

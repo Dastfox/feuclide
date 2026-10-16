@@ -62,6 +62,9 @@ pub struct FrameView<'a, G: GpuGeometry> {
     /// composed with it first, and windows onto it ([`ShowsElsewhere`](crate::ShowsElsewhere))
     /// are not drawn. [`view`](Self::view) is then the other eye's.
     pub elsewhere: Option<G::Isometry>,
+    /// Whether the raster path drops what lies behind the view's clip plane
+    /// ([`Elsewhere::clip`](crate::Elsewhere::clip)), drawing through its clipped pipelines.
+    pub clipped: bool,
 }
 
 impl<G: GpuGeometry> FrameView<'_, G> {
