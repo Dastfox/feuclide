@@ -72,8 +72,9 @@ fn vertex(in: Vertex) -> Varyings {
     let iso = instance_iso(in);
     let shaped = deform(in.position, in.normal, iso, in.data);
     let point = geo_apply_iso(iso, shaped.position);
-    // The pipeline marks the copy of an instance seen the long way round by its colour's alpha.
-    let far_side = in.color.w > 1.5;
+    // The pipeline marks the copy of an instance seen the long way round by its colour's alpha
+    // turned negative; its size is the image's alpha on the surface (`paint`).
+    let far_side = in.color.w < 0.0;
     var out: Varyings;
     out.clip = geo_project_side(point, far_side);
     // Through the same point of their pixels as the rays (`view.jitter`).
@@ -156,7 +157,9 @@ fn paint(in: Varyings) -> vec4<f32> {
     // ask for more of it.
     let fog = max(geo_fog(d, lighting.fog_density), smoothstep(0.85 * view.far, view.far, d));
     let haze = 1.0 - (1.0 - fog) * (1.0 - clamp(in.haze, 0.0, 1.0));
-    return vec4<f32>(mix(lit, sky_haze(geo_seen_direction(p, far_side)), haze), 1.0);
+    // The image's alpha on the surface: the instance colour's, 1 at least (the pipeline sees to
+    // it), a mark for the caller's image effects to read, as a field's `sdf_alpha` is.
+    return vec4<f32>(mix(lit, sky_haze(geo_seen_direction(p, far_side)), haze), abs(in.color.w));
 }
 
 // A window onto the scene seen from another eye: what that eye sees at this pixel, times the

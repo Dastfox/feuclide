@@ -109,7 +109,7 @@ struct Settled {
 }
 
 // Added to the alpha of a pixel carried rather than marched: `CARRIED` in `ray_march.wgsl`.
-const CARRIED: f32 = 8.0;
+const CARRIED: f32 = 64.0;
 
 @fragment
 fn fragment(@builtin(position) frag: vec4<f32>) -> Settled {

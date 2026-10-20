@@ -37,6 +37,17 @@ impl Color {
         Self::srgb(channel(16), channel(8), channel(0))
     }
 
+    /// The same colour with alpha `a`: on an instance, over 1, the image's alpha on it
+    /// ([`Instance::color`](crate::Instance::color)).
+    pub const fn with_alpha(self, a: f32) -> Self {
+        Self {
+            r: self.r,
+            g: self.g,
+            b: self.b,
+            a,
+        }
+    }
+
     /// Linear `[r, g, b, a]`.
     pub fn to_array(self) -> [f32; 4] {
         [self.r, self.g, self.b, self.a]

@@ -19,7 +19,7 @@ pub struct EffectSetup<'a> {
     /// Layout of bind group 0 (`fk::view`: view, world, lighting), which the pass sets.
     pub frame_layout: &'a wgpu::BindGroupLayout,
     /// Format of the colour target, linear HDR. Its alpha is 0 on the sky, 1 on surfaces, or
-    /// what a ray-marched field's `sdf_alpha` says.
+    /// what an instance's colour's alpha (over 1) or a ray-marched field's `sdf_alpha` says.
     pub color_format: wgpu::TextureFormat,
     /// Whether the depth target is multisampled: bind it as `texture_depth_multisampled_2d`.
     pub multisampled_depth: bool,

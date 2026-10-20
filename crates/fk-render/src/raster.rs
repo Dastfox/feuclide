@@ -728,7 +728,8 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                 stats.culled += 1;
             }
             // Seen the long way round, it stands where its antipode would, `π − d` away the
-            // other way: drawn there again, marked by its colour's alpha (the shader's far side).
+            // other way: drawn there again, marked by its colour's alpha turned negative (the
+            // shader's far side).
             let far_seen = antipode.is_some_and(|round| {
                 let Some(towards) = G::log(&origin, &centre) else {
                     return true;
@@ -743,11 +744,13 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
             if !seen && !casts && !far_seen {
                 continue;
             }
-            let instance = GpuInstance {
+            // The colour's alpha is the image's alpha on the surface, 1 at least.
+            let mut instance = GpuInstance {
                 iso: matrix_columns(&G::isometry_matrix(&candidate.relative)),
                 color: candidate.color,
                 data: candidate.data,
             };
+            instance.color[3] = instance.color[3].max(1.0);
             let key = (candidate.slot, candidate.mesh);
             if let Some(eye) = candidate.window {
                 if seen {
@@ -766,7 +769,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
             }
             if far_seen {
                 let mut far = instance;
-                far.color[3] = 2.0;
+                far.color[3] = -instance.color[3];
                 self.bins.entry(key).or_default().push(far);
                 if candidate.layer {
                     self.layer_bins.entry(key).or_default().push(far);

@@ -24,10 +24,11 @@
 //! 3. **Opaque.** One pass into a linear HDR colour target and a depth target, multisampled
 //!    ([`Multisampling`], 4× by default) and resolved at the end: first the
 //!    [`Sky`] behind everything (a fullscreen triangle that leaves depth alone), then every
-//!    renderer. The image's alpha is 1 where a surface was drawn (or what a ray-marched
-//!    field's `sdf_alpha` says) and 0 on the sky, so what only applies to surfaces follows the
-//!    image. While a [`LayerRender`] is enabled, it is drawn next: only the entities marked
-//!    [`OnLayer`], over a flat colour.
+//!    renderer. The image's alpha is 1 where a surface was drawn (or the instance's colour's
+//!    alpha when that is over 1, or what a ray-marched field's `sdf_alpha` says: a mark for
+//!    the caller's image effects, which the engine gives no meaning) and 0 on the sky, so what
+//!    only applies to surfaces follows the image. While a [`LayerRender`] is enabled, it is
+//!    drawn next: only the entities marked [`OnLayer`], over a flat colour.
 //! 4. **Image effects.** The [`Settle`] when on, then the caller's [`ImageEffect`]s in order
 //!    ([`add_image_effect`]): fullscreen passes of its own that rewrite the image (an inked
 //!    look, a datamosh, a crossfade through a [`CarriedImage`]). Then what is drawn late

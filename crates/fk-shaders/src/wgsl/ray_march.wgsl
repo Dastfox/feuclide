@@ -49,8 +49,9 @@ const BIG: f32 = 3.4e38;
 const INTERLEAVED: u32 = 8u;
 
 // Added to the alpha of a pixel carried from the last frame rather than marched, while the image
-// settles over frames (`march.interleave.w`); the settle pass takes it off.
-const CARRIED: f32 = 8.0;
+// settles over frames (`march.interleave.w`); the settle pass takes it off. Over any mark a
+// surface's alpha may carry (a field's `sdf_alpha`, an instance's colour's alpha).
+const CARRIED: f32 = 64.0;
 
 // The alpha `a` without the mark of a pixel carried.
 fn unmarked(a: f32) -> f32 {

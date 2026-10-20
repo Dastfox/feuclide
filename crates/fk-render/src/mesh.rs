@@ -336,7 +336,9 @@ impl Meshes {
 pub struct Instance<G: Geometry> {
     /// Pose relative to the entity's [`Pose`].
     pub pose: G::Isometry,
-    /// Base colour of the painted material.
+    /// Base colour of the painted material. Its alpha, when over 1, is the image's alpha on
+    /// the surface (1 otherwise): a mark for the caller's image effects to read, as a
+    /// ray-marched field's `sdf_alpha` is; the engine gives it no meaning.
     pub color: Color,
     /// Free for the game's shaders; the painted material ignores it.
     pub data: [f32; 4],
