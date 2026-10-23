@@ -39,14 +39,17 @@ struct Disc {
     figure: vec4<f32>,
 }
 
-// A point light. Its light falls off as the geometry's spheres grow (`geo_light_falloff`) and
+// A point light, or a spot. Its light falls off as the geometry's spheres grow (`geo_light_falloff`) and
 // fades out at its range.
 struct PointLight {
     // Where it is: the embedded point, in the eye's frame.
     position: vec4<f32>,
     color: vec4<f32>,
-    // x: intensity, the light on a surface facing it one unit away in flat space; y: range.
+    // x: intensity, the light on a surface facing it one unit away in flat space; y: range; for
+    // a spot, z and w the cosines of its inner and outer half-angles.
     shape: vec4<f32>,
+    // A spot's axis, a tangent at `position`, in the eye's frame; zero shining every way.
+    direction: vec4<f32>,
 }
 
 struct Lighting {

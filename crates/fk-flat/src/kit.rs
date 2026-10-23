@@ -423,6 +423,11 @@ impl<K: Default> Chunks<K> {
     pub fn kits(&self) -> impl Iterator<Item = &[K]> {
         self.chunks.values().map(Vec::as_slice)
     }
+
+    /// Every chunk's kits, `kinds` each, given up.
+    pub fn into_kits(self) -> impl Iterator<Item = Vec<K>> {
+        self.chunks.into_values()
+    }
 }
 
 #[cfg(test)]

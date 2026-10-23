@@ -1,4 +1,4 @@
-//! Point lights, with the falloff of their geometry.
+//! Point lights, with the falloff of their geometry, and spots.
 //!
 //! A point light spreads its light over the geodesic spheres about it, so what reaches a
 //! surface at distance `d` goes as one over the area of the sphere of radius `d`: `1/d²` in E³,
@@ -43,6 +43,27 @@ impl PointLight {
     /// colour: the intensity, the geometry's falloff and the fade towards the range.
     pub fn at<G: Geometry>(&self, d: Real) -> Real {
         self.intensity * falloff::<G>(d) * window(d, self.range)
+    }
+}
+
+/// Beside a [`PointLight`], gathers its light into a cone along its frame's `−origin_frame(2)`
+/// (the way a camera looks): whole within `inner` of that axis, fading out to nothing at
+/// `outer` (half-angles, in radians).
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct Spot {
+    /// Half-angle within which the light is whole.
+    pub inner: Real,
+    /// Half-angle past which it lights nothing.
+    pub outer: Real,
+}
+
+impl Spot {
+    /// The share of its light a spot sends at `angle` from its axis: 1 within `inner`, 0 past
+    /// `outer`, smoothly between on the cosines (the shader's twin, in `fk::paint`).
+    pub fn share(&self, angle: Real) -> Real {
+        let (lo, hi) = (self.outer.cos(), self.inner.cos());
+        let x = ((angle.cos() - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
     }
 }
 
@@ -103,5 +124,18 @@ mod tests {
         assert!((window(0.0, 5.0) - 1.0).abs() < 1e-12);
         // Near it, nearly the plain falloff.
         assert!((light.at::<E3>(1.0) - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_spot_is_whole_inside_and_dark_outside() {
+        let spot = Spot {
+            inner: 0.2,
+            outer: 0.5,
+        };
+        assert_eq!(spot.share(0.0), 1.0);
+        assert_eq!(spot.share(0.2), 1.0);
+        assert_eq!(spot.share(0.6), 0.0);
+        let half = spot.share(0.35);
+        assert!(half > 0.0 && half < 1.0);
     }
 }

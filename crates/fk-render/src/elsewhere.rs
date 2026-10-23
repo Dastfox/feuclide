@@ -35,6 +35,12 @@ pub struct Elsewhere<G: Geometry> {
     /// the mouth stands in its way. `None` (the default) for all of it. The ray marcher does
     /// not cut its fields.
     pub clip: Option<G::Isometry>,
+    /// The corners of the one window it is seen through, global points in order round it:
+    /// only the part of its image they cover in the frame's is drawn, the rest neither drawn
+    /// nor culled for, so that a window seen small costs little. `None` (the default) for the
+    /// whole image, as a [framed](crate::MeshBuilder::framed) screen needs. Any other window
+    /// onto it shows nothing beyond that part.
+    pub window: Option<[G::Point; 4]>,
 }
 
 impl<G: Geometry> Default for Elsewhere<G> {
@@ -44,6 +50,7 @@ impl<G: Geometry> Default for Elsewhere<G> {
             flip: false,
             lighting: None,
             clip: None,
+            window: None,
         }
     }
 }
@@ -55,6 +62,7 @@ impl<G: Geometry> Clone for Elsewhere<G> {
             flip: self.flip,
             lighting: self.lighting.clone(),
             clip: self.clip,
+            window: self.window,
         }
     }
 }
@@ -66,6 +74,7 @@ impl<G: Geometry> std::fmt::Debug for Elsewhere<G> {
             .field("flip", &self.flip)
             .field("lighting", &self.lighting)
             .field("clip", &self.clip)
+            .field("window", &self.window)
             .finish()
     }
 }
@@ -85,16 +94,21 @@ pub struct OtherEye<G: Geometry> {
     /// What it sees is cut off at the plane `z = 0` of this frame, keeping its `+z` side, in
     /// the raster path; `None` for all of it.
     pub clip: Option<G::Isometry>,
+    /// The corners of the one window it is seen through, as [`Elsewhere::window`]; `None` for
+    /// the whole image.
+    pub window: Option<[G::Point; 4]>,
 }
 
 impl<G: Geometry> OtherEye<G> {
-    /// An eye at `eye`, the right way up, under the frame's light, cut off nowhere.
+    /// An eye at `eye`, the right way up, under the frame's light, cut off nowhere, its whole
+    /// image drawn.
     pub fn at(eye: G::Isometry) -> Self {
         Self {
             eye,
             flip: false,
             lighting: None,
             clip: None,
+            window: None,
         }
     }
 }
@@ -106,6 +120,7 @@ impl<G: Geometry> Clone for OtherEye<G> {
             flip: self.flip,
             lighting: self.lighting.clone(),
             clip: self.clip,
+            window: self.window,
         }
     }
 }
@@ -117,6 +132,7 @@ impl<G: Geometry> std::fmt::Debug for OtherEye<G> {
             .field("flip", &self.flip)
             .field("lighting", &self.lighting)
             .field("clip", &self.clip)
+            .field("window", &self.window)
             .finish()
     }
 }

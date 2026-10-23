@@ -13,7 +13,7 @@ fn banded(light: f32) -> f32 {
 
 // The light of the point lights on a surface at `p` with normal `n` (a tangent vector there),
 // painted in bands like the sun's: each light's colour times the banded share of it that
-// reaches, after the geometry's falloff and the fade at its range.
+// reaches, after the geometry's falloff, the fade at its range and, for a spot, its cone.
 fn point_lights(p: vec4<f32>, n: vec4<f32>) -> vec3<f32> {
     var sum = vec3<f32>(0.0);
     let count = u32(lighting.point_count.x);
@@ -28,7 +28,12 @@ fn point_lights(p: vec4<f32>, n: vec4<f32>) -> vec3<f32> {
         let facing = max(geo_inner(p, n, geo_towards(p, light.position)) * nn, 0.0);
         let x4 = pow(d / range, 4.0);
         let window = (1.0 - x4) * (1.0 - x4);
-        let reach = light.shape.x * geo_light_falloff(d) * window * facing;
+        var cone = 1.0;
+        if any(light.direction != vec4<f32>(0.0)) {
+            let along = geo_inner(light.position, light.direction, geo_towards(light.position, p));
+            cone = smoothstep(light.shape.w, light.shape.z, along);
+        }
+        let reach = light.shape.x * geo_light_falloff(d) * window * facing * cone;
         sum += light.color.rgb * banded(reach);
     }
     return sum;

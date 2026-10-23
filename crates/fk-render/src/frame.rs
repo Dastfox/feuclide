@@ -562,8 +562,12 @@ pub(crate) struct PointLightBlock {
     /// The embedded point, in the eye's frame.
     pub position: Vec4f,
     pub color: Vec4f,
-    /// Intensity, range.
+    /// Intensity, range, and for a [`Spot`](crate::Spot) the cosines of its inner and outer
+    /// half-angles.
     pub shape: Vec4f,
+    /// A spot's axis, embedded at `position`, in the eye's frame; zero for a light shining every
+    /// way.
+    pub direction: Vec4f,
 }
 
 #[derive(ShaderType)]

@@ -74,6 +74,15 @@ impl ShadowView {
         })
     }
 
+    /// How far and which way the light carries a shadow across the whole map, in the eye's
+    /// frame: from a caster to as far as the map reaches.
+    pub fn along(&self) -> Vector3<Real> {
+        // The map's depth row is the light's way scaled by `0.5 / depth`, over the `2 · depth`
+        // it spans.
+        let row = self.matrix.fixed_view::<1, 3>(2, 0).transpose();
+        row * (4.0 * self.depth * self.depth)
+    }
+
     /// Whether any of the ball of radius `radius` about `centre` (relative to the eye) is in the
     /// map: whether it can cast a shadow there.
     pub fn sees<G: GpuGeometry>(&self, centre: &G::Point, radius: Real) -> bool {

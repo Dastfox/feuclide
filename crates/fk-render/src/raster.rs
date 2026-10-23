@@ -705,6 +705,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
         let antipode = G::constant_curvature()
             .filter(|&k| k > 0.0)
             .map(|k| std::f64::consts::PI / k.sqrt());
+        let along = view.shadow.map(|shadow| shadow.along());
         for candidate in &self.candidates {
             // No window onto any other eye's view in any eye's image.
             if candidate.window.is_some() && view.elsewhere.is_some() {
@@ -720,10 +721,13 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
             };
             let centre = G::apply(&candidate.relative, &origin);
             let seen = view.frustum.sees::<G>(&centre, mesh.radius);
+            // Cast into the map, and only where its shadow can fall in view.
             let casts = candidate.casts
                 && view
                     .shadow
-                    .is_some_and(|shadow| shadow.sees::<G>(&centre, mesh.radius));
+                    .is_some_and(|shadow| shadow.sees::<G>(&centre, mesh.radius))
+                && along
+                    .is_some_and(|along| view.frustum.sees_cast::<G>(&centre, mesh.radius, &along));
             if !seen {
                 stats.culled += 1;
             }
@@ -870,7 +874,7 @@ mod tests {
     use crate::graph::{FrameBuffers, frame_blocks, frame_layout};
     use crate::march::read_buffer;
     use crate::shadow::{SHADOW_FORMAT, ShadowMap};
-    use crate::{Color, Frustum, Lighting, MeshBuilder, NormalMaps, PointLight, shapes};
+    use crate::{Color, Frustum, Lighting, MeshBuilder, NormalMaps, PointLight, Spot, shapes};
 
     type Isometry = <E3 as Geometry>::Isometry;
 
@@ -1200,7 +1204,7 @@ mod tests {
             sun: -Vector3::z(),
             ..Lighting::default()
         };
-        let lit_by = |light: Option<PointLight>| {
+        let shone_by = |light: Option<PointLight>, spot: Option<(Spot, fk_math::Real)>| {
             let mut world = World::new();
             let mut meshes = Meshes::default();
             let wall = meshes.add(shapes::cuboid(Vector3::new(6.0, 6.0, 0.05)).build::<E3>());
@@ -1211,13 +1215,22 @@ mod tests {
                 MeshInstances::<E3>::single(wall, Color::WHITE),
             ));
             if let Some(light) = light {
-                world.spawn((GlobalPose::<E3>::new(at(-3.0)), light));
+                let light = world.spawn((GlobalPose::<E3>::new(at(-3.0)), light)).id();
+                if let Some((spot, turn)) = spot {
+                    let turned = at(-3.0).compose(&Isometry::exp(
+                        &(E3::rotation(&Vector3::z(), &Vector3::x()) * turn),
+                    ));
+                    world
+                        .entity_mut(light)
+                        .insert((spot, GlobalPose::<E3>::new(turned)));
+                }
             }
             let eye = world
                 .spawn(GlobalPose::<E3>::new(Isometry::identity()))
                 .id();
             draw(&gpu, &mut world, eye, &lighting, None)
         };
+        let lit_by = |light: Option<PointLight>| shone_by(light, None);
         let brightness = |image: &[u8], x: u32, y: u32| {
             let [r, g, b, _] = pixel(image, x, y);
             u32::from(r) + u32::from(g) + u32::from(b)
@@ -1249,5 +1262,18 @@ mod tests {
             pixel(&dark, cx, cy),
             "out of its range"
         );
+        // A spot lights the wall it shines at, and nothing turned away from it.
+        let spot = Spot {
+            inner: 0.3,
+            outer: 0.5,
+        };
+        let at_it = shone_by(Some(light), Some((spot, 0.0)));
+        assert_eq!(
+            pixel(&at_it, cx, cy),
+            pixel(&lit, cx, cy),
+            "whole on its axis"
+        );
+        let away = shone_by(Some(light), Some((spot, std::f64::consts::PI)));
+        assert_eq!(pixel(&away, cx, cy), pixel(&dark, cx, cy), "turned away");
     }
 }

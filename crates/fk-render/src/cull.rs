@@ -43,6 +43,29 @@ impl Frustum {
         }
     }
 
+    /// The part of that frustum seen through the rectangle `[x0, y0, x1, y1]` of its image, in
+    /// normalized device coordinates (`−1` to `1`, `y` up): `[−1, −1, 1, 1]` for all of it.
+    pub fn part(fov_y: Real, aspect: Real, far: Real, [x0, y0, x1, y1]: [Real; 4]) -> Self {
+        let tan_y = (fov_y / 2.0).tan();
+        let tan_x = tan_y * aspect;
+        // The plane through the eye and the image's line at `t` across it, facing `sign`.
+        let side = |t: Real, sign: Real, across: usize| {
+            let mut normal = Vector3::zeros();
+            normal[across] = sign;
+            normal.z = sign * t;
+            normal.normalize()
+        };
+        Self {
+            planes: [
+                side(x0 * tan_x, 1.0, 0),
+                side(x1 * tan_x, -1.0, 0),
+                side(y0 * tan_y, 1.0, 1),
+                side(y1 * tan_y, -1.0, 1),
+            ],
+            far,
+        }
+    }
+
     /// Whether any of the geodesic ball of radius `radius` about `centre` (relative to the eye)
     /// can be seen. Errs towards visible.
     pub fn sees<G: Geometry>(&self, centre: &G::Point, radius: Real) -> bool {
@@ -64,6 +87,32 @@ impl Frustum {
         self.planes
             .iter()
             .all(|normal| normal.dot(&direction) >= -sin_alpha)
+    }
+}
+
+impl Frustum {
+    /// Whether the shadow of the ball of radius `radius` about `centre` (relative to the eye),
+    /// cast along `along` (how far and which way the light carries it, in the eye's frame), can
+    /// fall anywhere seen: whether the ball swept along it meets the frustum's sides. Flat space
+    /// only, where the sweep is straight; elsewhere, and in doubt, seen.
+    pub fn sees_cast<G: Geometry>(
+        &self,
+        centre: &G::Point,
+        radius: Real,
+        along: &Vector3<Real>,
+    ) -> bool {
+        if G::constant_curvature() != Some(0.0) {
+            return true;
+        }
+        let origin = G::origin();
+        let Some(v) = G::log(&origin, centre) else {
+            return true;
+        };
+        let at = Vector3::from_fn(|i, _| G::inner(&origin, &v, &G::origin_frame(i)));
+        let end = at + along;
+        self.planes
+            .iter()
+            .all(|normal| normal.dot(&at) >= -radius || normal.dot(&end) >= -radius)
     }
 }
 
@@ -120,6 +169,41 @@ mod tests {
         assert!(!sees(&frustum, 0.0, edge + 1e-6, -10.0, 1.0), "top");
         assert!(!sees(&frustum, 0.0, -edge - 1e-6, -10.0, 1.0), "bottom");
         assert!(!sees(&frustum, -edge - 1e-6, 0.0, -10.0, 1.0), "left");
+    }
+
+    #[test]
+    fn a_part_of_the_image_sees_through_it_only() {
+        let whole = Frustum::new(1.2, 1.7, 100.0);
+        let all = Frustum::part(1.2, 1.7, 100.0, [-1.0, -1.0, 1.0, 1.0]);
+        for (a, b) in whole.planes.iter().zip(&all.planes) {
+            assert!((a - b).norm() < 1e-12, "{a} against {b}");
+        }
+        // The upper right quarter of a 90° square image: x and y both up to z away.
+        let quarter = Frustum::part(FRAC_PI_2, 1.0, 100.0, [0.0, 0.0, 1.0, 1.0]);
+        assert!(sees(&quarter, 5.0, 5.0, -10.0, 0.1));
+        assert!(!sees(&quarter, -1.0, 5.0, -10.0, 0.1), "left of it");
+        assert!(!sees(&quarter, 5.0, -1.0, -10.0, 0.1), "under it");
+        assert!(sees(&quarter, -0.05, 5.0, -10.0, 0.1), "reaching into it");
+        assert!(!sees(&quarter, 11.0, 5.0, -10.0, 0.1), "right of the image");
+    }
+
+    #[test]
+    fn a_shadow_is_seen_where_the_light_carries_it_into_view() {
+        let frustum = Frustum::new(FRAC_PI_2, 1.0, 100.0);
+        let cast = |x: Real, z: Real, along: Vector3<Real>| {
+            frustum.sees_cast::<E3>(&Point3::new(x, 0.0, z), 1.0, &along)
+        };
+        let down = Vector3::new(0.0, -50.0, 0.0);
+        // Behind the eye, the light straight down: its shadow falls behind too.
+        assert!(!cast(0.0, 10.0, down));
+        // In view, its shadow too.
+        assert!(cast(0.0, -10.0, down));
+        // Out to the right and behind, the light carrying it forward and left into view.
+        assert!(cast(30.0, 5.0, Vector3::new(-60.0, 0.0, -60.0)));
+        assert!(
+            !cast(30.0, 5.0, Vector3::new(60.0, 0.0, 0.0)),
+            "carried away"
+        );
     }
 
     #[test]

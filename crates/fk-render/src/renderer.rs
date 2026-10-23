@@ -54,7 +54,8 @@ pub struct FrameView<'a, G: GpuGeometry> {
     pub size: [u32; 2],
     /// The camera's frustum, for culling.
     pub frustum: Frustum,
-    /// The shadow map this frame, when shadows are drawn: which casters to draw into it.
+    /// The shadow map this frame, when shadows are drawn: which casters to draw into it, those
+    /// only whose shadows can fall within [`frustum`](Self::frustum).
     pub shadow: Option<ShadowView>,
     /// Set when this is the image of the [`Elsewhere`](crate::Elsewhere) eye, or of one of the
     /// [`OtherEyes`](crate::OtherEyes), drawn before the frame: that eye relative to the

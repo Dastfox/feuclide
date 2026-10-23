@@ -108,7 +108,7 @@ pub use frame::{
 };
 pub use gpu::{Gpu, Vec2f, Vec4f, matrix_columns};
 pub use graph::SharedDevice;
-pub use light::{MAX_POINT_LIGHTS, PointLight};
+pub use light::{MAX_POINT_LIGHTS, PointLight, Spot};
 pub use march::{
     FieldsBuilt, RayMarchPipeline, RayMarched, RayMarching, SDF_PARAMS, SdfHandle, SdfShader, Sdfs,
 };

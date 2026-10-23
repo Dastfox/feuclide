@@ -16,14 +16,16 @@ use crate::carried::CarriedImage;
 use crate::effect::{
     EffectFactories, EffectFrame, EffectSetup, EffectTargets, GradeShader, ImageEffect, SkyFigure,
 };
-use crate::elsewhere::{Elsewhere, ElsewhereShared, ElsewhereTargets, MAX_OTHER_EYES, OtherEyes};
+use crate::elsewhere::{
+    Elsewhere, ElsewhereShared, ElsewhereTargets, MAX_OTHER_EYES, OtherEye, OtherEyes,
+};
 use crate::frame::{
     DiscBlock, LightingBlock, MAX_SKY_DISCS, PointLightBlock, SkyDiscs, ViewBlock, WorldBlock,
     uniform_bytes,
 };
 use crate::gpu::{Vec2f, Vec4f, matrix_columns};
 use crate::late::DepthResolve;
-use crate::light::{MAX_POINT_LIGHTS, PointLight};
+use crate::light::{MAX_POINT_LIGHTS, PointLight, Spot};
 use crate::mesh::tangent;
 use crate::overlay::{Overlay, OverlayPass};
 use crate::post::PostPass;
@@ -650,8 +652,14 @@ impl<G: GpuGeometry> RenderState<G> {
         let elsewhere_drawn = match (&view, other.eye) {
             (Some(view), Some(eye)) => {
                 let seen_by = other.lighting.as_ref().unwrap_or(&lighting);
-                let eye = (eye, other.clip, other.flip);
-                self.draw_elsewhere(world, view, eye, None, seen_by, &shadows, size)
+                let eye = OtherEye {
+                    eye,
+                    flip: other.flip,
+                    lighting: None,
+                    clip: other.clip,
+                    window: other.window,
+                };
+                self.draw_elsewhere(world, view, &eye, None, seen_by, &shadows, size)
             }
             _ => false,
         };
@@ -665,9 +673,8 @@ impl<G: GpuGeometry> RenderState<G> {
             for (k, other) in more.0.iter().enumerate() {
                 let Some(other) = other else { continue };
                 let seen_by = other.lighting.as_ref().unwrap_or(&lighting);
-                let eye = (other.eye, other.clip, other.flip);
                 others_drawn[k] =
-                    self.draw_elsewhere(world, view, eye, Some(k), seen_by, &shadows, size);
+                    self.draw_elsewhere(world, view, other, Some(k), seen_by, &shadows, size);
             }
         }
         let shadow = view
@@ -1038,17 +1045,17 @@ impl<G: GpuGeometry> RenderState<G> {
         }
     }
 
-    /// Draws the scene seen from `eye` (cut off at `clip`, shown upside down if `flip`) into its
-    /// image and submits it: the [`Elsewhere`] eye's for `which` `None`, else eye `which` of the
-    /// [`OtherEyes`] (its image made the first time). The frame's camera and shadows from there
-    /// under `lighting` (its own or the frame's), its poses made relative to that eye. Whether it
-    /// was drawn.
+    /// Draws the scene seen from `other` (cut off at its clip, shown upside down if it is
+    /// flipped, only what is seen through its window) into its image and submits it: the
+    /// [`Elsewhere`] eye's for `which` `None`, else eye `which` of the [`OtherEyes`] (its image
+    /// made the first time). The frame's camera and shadows from there under `lighting` (its
+    /// own or the frame's), its poses made relative to that eye. Whether it was drawn.
     #[allow(clippy::too_many_arguments)]
     fn draw_elsewhere(
         &mut self,
         world: &mut World,
         view: &ActiveView<G>,
-        (eye, clip, flip): (G::Isometry, Option<G::Isometry>, bool),
+        other: &OtherEye<G>,
         which: Option<usize>,
         lighting: &Lighting,
         shadows: &Shadows,
@@ -1057,6 +1064,27 @@ impl<G: GpuGeometry> RenderState<G> {
         let Some(targets) = &self.targets else {
             return false;
         };
+        let OtherEye {
+            eye,
+            flip,
+            clip,
+            window,
+            ..
+        } = *other;
+        let aspect = Real::from(size.width) / Real::from(size.height);
+        // The part of its image the window covers, upside down when it is shown so.
+        let part = window
+            .and_then(|corners| seen_part(view, aspect, &corners))
+            .map(|[x0, y0, x1, y1]| {
+                if flip {
+                    [x0, -y1, x1, -y0]
+                } else {
+                    [x0, y0, x1, y1]
+                }
+            });
+        if part.is_some_and(|[x0, y0, x1, y1]| x0 >= x1 || y0 >= y1) {
+            return false;
+        }
         if let Some(k) = which
             && targets.others[k].is_none()
         {
@@ -1065,8 +1093,8 @@ impl<G: GpuGeometry> RenderState<G> {
                 targets.others[k] = Some(made);
             }
         }
-        let mut other = view.clone();
-        other.eye.isometry = eye;
+        let mut seen = view.clone();
+        seen.eye.isometry = eye;
         let shift = eye.inverse().compose(&view.eye.isometry);
         let shadow = shadows
             .enabled
@@ -1077,7 +1105,7 @@ impl<G: GpuGeometry> RenderState<G> {
         }
         let mut blocks = frame_blocks(
             world,
-            Some(&other),
+            Some(&seen),
             lighting,
             shadow.as_ref(),
             self.shadow_map.size,
@@ -1087,12 +1115,15 @@ impl<G: GpuGeometry> RenderState<G> {
             blocks.view.clip = clip_form::<G>(&eye, clip);
         }
         self.frame.write(&self.gpu.queue, &blocks);
-        let aspect = Real::from(size.width) / Real::from(size.height);
+        let (fov_y, far) = (seen.camera.fov_y, seen.camera.far);
         let frame_view = FrameView {
-            view: &other,
+            view: &seen,
             aspect,
             size: [size.width, size.height],
-            frustum: Frustum::new(other.camera.fov_y, aspect, other.camera.far),
+            frustum: match part {
+                Some(part) => Frustum::part(fov_y, aspect, far, part),
+                None => Frustum::new(fov_y, aspect, far),
+            },
             shadow,
             elsewhere: Some(shift),
             clipped: clip.is_some(),
@@ -1144,6 +1175,10 @@ impl<G: GpuGeometry> RenderState<G> {
                 }),
                 ..Default::default()
             });
+            if let Some(part) = part {
+                let [x, y, width, height] = scissor(part, [size.width, size.height]);
+                pass.set_scissor_rect(x, y, width, height);
+            }
             self.sky.render(&mut pass, &self.frame.bind_group);
             let bindings = FrameBindings {
                 frame: &self.frame.bind_group,
@@ -1159,6 +1194,74 @@ impl<G: GpuGeometry> RenderState<G> {
         self.gpu.queue.submit([encoder.finish()]);
         true
     }
+}
+
+/// The rectangle `[x0, y0, x1, y1]` of the frame's image (normalized device coordinates, `y`
+/// up, clamped to it) that the window with these corners (global points, round it) covers,
+/// seen from the frame's eye, cut off at the eye's plane: empty when none of it is in front.
+/// `None` outside flat space, for the whole image.
+fn seen_part<G: GpuGeometry>(
+    view: &ActiveView<G>,
+    aspect: Real,
+    corners: &[G::Point; 4],
+) -> Option<[Real; 4]> {
+    // Nearer the eye's plane than this, a window's edge is cut off.
+    const NEAR: Real = 1e-4;
+    if G::constant_curvature() != Some(0.0) {
+        return None;
+    }
+    let origin = G::origin();
+    let to_eye = view.eye.isometry.inverse();
+    let mut round = Vec::with_capacity(4);
+    for corner in corners {
+        let v = G::log(&origin, &G::apply(&to_eye, corner))?;
+        round.push(Vector3::from_fn(|i, _| {
+            G::inner(&origin, &v, &G::origin_frame(i))
+        }));
+    }
+    // The polygon's part in front of the eye (the eye looks along −z), its edges straight.
+    let mut ahead = Vec::with_capacity(8);
+    for (k, a) in round.iter().enumerate() {
+        let b = round[(k + 1) % round.len()];
+        let (in_a, in_b) = (a.z <= -NEAR, b.z <= -NEAR);
+        if in_a {
+            ahead.push(*a);
+        }
+        if in_a != in_b {
+            let t = (-NEAR - a.z) / (b.z - a.z);
+            ahead.push(a + (b - a) * t);
+        }
+    }
+    let tan_y = (view.camera.fov_y / 2.0).tan();
+    let tan_x = tan_y * aspect;
+    let mut part = [1.0, 1.0, -1.0, -1.0];
+    for (k, d) in ahead.iter().enumerate() {
+        let (x, y) = (d.x / -d.z / tan_x, d.y / -d.z / tan_y);
+        part = if k == 0 {
+            [x, y, x, y]
+        } else {
+            [
+                part[0].min(x),
+                part[1].min(y),
+                part[2].max(x),
+                part[3].max(y),
+            ]
+        };
+    }
+    Some(part.map(|t| t.clamp(-1.0, 1.0)))
+}
+
+/// The pixels `[x, y, width, height]` of an image `size` wide and high that the rectangle
+/// `part` of it covers (normalized device coordinates), a little more for the filtering.
+fn scissor([x0, y0, x1, y1]: [Real; 4], [width, height]: [u32; 2]) -> [u32; 4] {
+    const MARGIN: Real = 2.0;
+    let (w, h) = (Real::from(width), Real::from(height));
+    let pixel = |t: Real, across: Real| t.clamp(0.0, across) as u32;
+    let left = pixel(((x0 + 1.0) / 2.0 * w - MARGIN).floor(), w);
+    let right = pixel(((x1 + 1.0) / 2.0 * w + MARGIN).ceil(), w);
+    let top = pixel(((1.0 - y1) / 2.0 * h - MARGIN).floor(), h);
+    let bottom = pixel(((1.0 - y0) / 2.0 * h + MARGIN).ceil(), h);
+    [left, top, right - left, bottom - top]
 }
 
 /// The bind groups of the [`OtherEyes`]' images drawn this frame (`drawn`), for the windows onto
@@ -1380,7 +1483,7 @@ fn point_lights<G: GpuGeometry>(
     let mut blocks = [PointLightBlock::default(); MAX_POINT_LIGHTS];
     let (Some(view), Some(mut query)) = (
         view,
-        world.try_query::<(&fk_scene::GlobalPose<G>, &PointLight)>(),
+        world.try_query::<(Entity, &fk_scene::GlobalPose<G>, &PointLight)>(),
     ) else {
         return (blocks, 0);
     };
@@ -1388,20 +1491,39 @@ fn point_lights<G: GpuGeometry>(
     let to_eye = view.eye.isometry.inverse();
     let mut lights: Vec<_> = query
         .iter(world)
-        .filter(|(_, light)| light.range > 0.0 && light.intensity > 0.0)
-        .map(|(pose, light)| {
-            let at = G::apply(&to_eye.compose(&pose.isometry), &origin);
+        .filter(|(_, _, light)| light.range > 0.0 && light.intensity > 0.0)
+        .map(|(entity, pose, light)| {
+            let relative = to_eye.compose(&pose.isometry);
+            let at = G::apply(&relative, &origin);
+            // Looked up apart: a query asking for a component no entity ever had finds nothing.
+            let spot = world.get::<Spot>(entity).map(|spot| {
+                let axis = G::apply_tangent(&relative, &(-G::origin_frame(2)));
+                (G::embed_tangent(&at, &axis), *spot)
+            });
             // How far short of the eye its light stops: the nearest reach first.
-            (G::distance(&origin, &at) - light.range, at, *light)
+            (G::distance(&origin, &at) - light.range, at, *light, spot)
         })
         .collect();
     lights.sort_by(|a, b| a.0.total_cmp(&b.0));
     let count = lights.len().min(MAX_POINT_LIGHTS);
-    for (block, (_, at, light)) in blocks.iter_mut().zip(lights) {
+    for (block, (_, at, light, spot)) in blocks.iter_mut().zip(lights) {
+        let (cones, direction) = match spot {
+            Some((axis, spot)) => (
+                [spot.inner.cos() as f32, spot.outer.cos() as f32],
+                Vec4f::from_real(&axis),
+            ),
+            None => ([0.0, 0.0], Vec4f::default()),
+        };
         *block = PointLightBlock {
             position: Vec4f::from_real(&G::embed_point(&at)),
             color: Vec4f(light.color.to_array()),
-            shape: Vec4f([light.intensity as f32, light.range as f32, 0.0, 0.0]),
+            shape: Vec4f([
+                light.intensity as f32,
+                light.range as f32,
+                cones[0],
+                cones[1],
+            ]),
+            direction,
         };
     }
     (blocks, count)
