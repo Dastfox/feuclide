@@ -102,17 +102,22 @@ fn shadow_vertex(in: Vertex) -> @builtin(position) vec4<f32> {
     return vec4<f32>(q.xy, max(q.z, 0.0), 1.0);
 }
 
-// The normal at `p` bent by the normal map: the map's normal in the frame of the unit normal,
-// the tangent along u (made square to it) and their cross product, turned by the handedness.
-// Flattened `d` from the eye by `normal_fade`, or everywhere while the maps are off.
-fn mapped_normal(p: vec4<f32>, normal: vec4<f32>, uv: vec4<f32>, tangent: vec4<f32>, d: f32) -> vec4<f32> {
-    let sampled = textureSample(normal_maps, normal_sampler, uv.xy, i32(uv.z)).xyz * 2.0 - 1.0;
+// How flat the maps are `d` from the eye: 0 whole, 1 flat, by `normal_fade`; flat everywhere
+// while the maps are off.
+fn map_flattened(d: f32) -> f32 {
     let faded = select(
         step(normal_fade.x, d),
         smoothstep(normal_fade.x, normal_fade.y, d),
         normal_fade.y > normal_fade.x,
     );
-    let m = mix(sampled, vec3<f32>(0.0, 0.0, 1.0), max(faded, 1.0 - normal_fade.z));
+    return max(faded, 1.0 - normal_fade.z);
+}
+
+// The normal at `p` bent by the map's `texel`: the map's normal in the frame of the unit normal,
+// the tangent along u (made square to it) and their cross product, turned by the handedness;
+// `flattened` of the way back to the surface's own.
+fn mapped_normal(p: vec4<f32>, normal: vec4<f32>, uv: vec4<f32>, tangent: vec4<f32>, texel: vec4<f32>, flattened: f32) -> vec4<f32> {
+    let m = mix(texel.xyz * 2.0 - 1.0, vec3<f32>(0.0, 0.0, 1.0), flattened);
     let n = normal * inverseSqrt(max(geo_inner(p, normal, normal), 1e-12));
     let along = geo_project_tangent(p, tangent);
     let t = along - n * geo_inner(p, n, along);
@@ -144,13 +149,18 @@ fn paint(in: Varyings) -> vec4<f32> {
     let p = geo_normalize_point(in.point);
     let far_side = in.side > 0.5;
     let d = geo_seen_distance(p, far_side);
-    let n = mapped_normal(p, geo_project_tangent(p, in.normal), in.uv, in.tangent, d);
+    let texel = textureSample(normal_maps, normal_sampler, in.uv.xy, i32(in.uv.z));
+    let flattened = map_flattened(d);
+    let n = mapped_normal(p, geo_project_tangent(p, in.normal), in.uv, in.tangent, texel, flattened);
+    // The map's tone, what the colour is multiplied by (its alpha × 1.5: `fk_render::TONE_ONE`
+    // is 1), on mapped surfaces only, flattened with its bumps.
+    let tone = select(1.0, mix(texel.a * 1.5, 1.0, flattened), in.uv.z > 0.5);
     let sun = geo_transport_from_eye(p, lighting.sun_direction);
     let facing = geo_inner(p, n, sun) * inverseSqrt(max(geo_inner(p, n, n) * geo_inner(p, sun, sun), 1e-12));
     // Cast shadows take the painted shadow colour, like the sides turned away from the light.
     let shadow = shadow_light(p, n.xyz * inverseSqrt(max(dot(n.xyz, n.xyz), 1e-12)));
     let light = mix(lighting.shadow_tint.rgb, lighting.sun_color.rgb, banded(facing) * shadow);
-    let lit = in.color.rgb * (light + point_lights(p, n));
+    let lit = in.color.rgb * tone * (light + point_lights(p, n));
 
     // Fade fully into the sky before the far surface, so culling there is invisible. The fog
     // takes the colour of the sky behind the surface, glows included; a deformed vertex can

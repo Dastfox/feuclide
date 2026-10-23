@@ -2,16 +2,18 @@
 //!
 //! Every map is a square RGBA8 image of the same size, the normal in the surface's tangent frame
 //! at each texel, `(x, y, z) ↦ (x, y, z) · 0.5 + 0.5` (z out of the surface, x along the
-//! surface's `u`, y along its `v`: the usual "OpenGL" convention). A mesh takes one
+//! surface's `u`, y along its `v`: the usual "OpenGL" convention), and in its alpha a tone, what
+//! the surface's colour is multiplied by there ([`TONE_ONE`] leaves it as it is): the grain and
+//! streaks a painter would lay on, so a face is not one flat colour. A mesh takes one
 //! ([`MeshBuilder::normal_map`](crate::MeshBuilder::normal_map)); its vertices then carry their
 //! uv and a tangent along `u`, embedded with the normal (carried along the same geodesic from
 //! the origin), and the fragment stage bends the normal by the map in the frame made of the
 //! normal, the tangent and their cross product in the geometry (`geo_cross`).
 //!
-//! The maps are sampled through mipmaps made by averaging the normals of each level below, so a
-//! far surface takes their mean and does not shimmer; past [`NormalMaps::fade`] the map flattens
-//! to the surface's own normal altogether. [`NormalMaps::set_enabled`] flattens them all at once,
-//! to compare.
+//! The maps are sampled through mipmaps made by averaging the normals (and the tones) of each
+//! level below, so a far surface takes their mean and does not shimmer; past
+//! [`NormalMaps::fade`] the map flattens to the surface's own normal and colour altogether.
+//! [`NormalMaps::set_enabled`] flattens them all at once, to compare.
 
 use bevy_ecs::resource::Resource;
 use fk_math::Real;
@@ -115,6 +117,18 @@ impl NormalMaps {
         self.add(texels)
     }
 
+    /// [`add_heights`](Self::add_heights), with the colour multiplied by `tone(u, v)` (1 leaves
+    /// it, from 0 to 1.5).
+    pub fn add_toned(
+        &mut self,
+        strength: Real,
+        height: impl Fn(Real, Real) -> Real,
+        tone: impl Fn(Real, Real) -> Real,
+    ) -> NormalMap {
+        let texels = heights_to_texels(self.size, strength, height, tone);
+        self.add(texels)
+    }
+
     /// How many maps there are.
     pub fn len(&self) -> usize {
         self.layers.len() - 1
@@ -151,7 +165,8 @@ impl NormalMaps {
     }
 }
 
-/// The level below `texels` (`size` across): each texel the mean normal of the four over it.
+/// The level below `texels` (`size` across): each texel the mean normal and tone of the four
+/// over it.
 fn half(texels: &[[u8; 4]], size: u32) -> Vec<[u8; 4]> {
     let next = (size / 2).max(1);
     let decode = |t: [u8; 4]| {
@@ -160,17 +175,19 @@ fn half(texels: &[[u8; 4]], size: u32) -> Vec<[u8; 4]> {
     let mut out = Vec::with_capacity((next * next) as usize);
     for j in 0..next {
         for i in 0..next {
-            let mut sum = fk_math::nalgebra::Vector3::zeros();
+            let (mut sum, mut tone) = (fk_math::nalgebra::Vector3::zeros(), 0);
             for (di, dj) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
                 let (x, y) = ((2 * i + di).min(size - 1), (2 * j + dj).min(size - 1));
-                sum += decode(texels[(y * size + x) as usize]);
+                let texel = texels[(y * size + x) as usize];
+                sum += decode(texel);
+                tone += u32::from(texel[3]);
             }
             let n = if sum.norm() > 1e-9 {
                 sum.normalize()
             } else {
                 fk_math::nalgebra::Vector3::z()
             };
-            out.push([byte(n.x), byte(n.y), byte(n.z), 255]);
+            out.push([byte(n.x), byte(n.y), byte(n.z), ((tone + 2) / 4) as u8]);
         }
     }
     out
@@ -181,10 +198,20 @@ fn byte(x: Real) -> u8 {
     ((x * 0.5 + 0.5) * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
-/// The flat normal, straight out of the surface.
-pub(crate) const FLAT: [u8; 4] = [128, 128, 255, 255];
+/// The alpha of a texel whose tone leaves the colour as it is: the shader reads `alpha · 1.5`,
+/// so a tone runs from 0 to 1.5 in steps of 1/170.
+pub const TONE_ONE: u8 = 170;
 
-/// The normal map of a height field over the unit square, `size` texels across, wrapping.
+/// A tone (what the colour is multiplied by) as a texel's alpha.
+pub fn tone_byte(tone: Real) -> u8 {
+    (tone * Real::from(TONE_ONE)).round().clamp(0.0, 255.0) as u8
+}
+
+/// The flat normal, straight out of the surface, its colour as it is.
+pub(crate) const FLAT: [u8; 4] = [128, 128, 255, TONE_ONE];
+
+/// The normal map of a height field over the unit square, `size` texels across, wrapping; the
+/// colour left as it is.
 pub fn heights_to_normals(
     size: u32,
     strength: Real,
@@ -202,8 +229,24 @@ pub fn heights_to_normals(
                 / (2.0 * h);
             let normal =
                 fk_math::nalgebra::Vector3::new(-strength * du, -strength * dv, 1.0).normalize();
-            texels.push([byte(normal.x), byte(normal.y), byte(normal.z), 255]);
+            texels.push([byte(normal.x), byte(normal.y), byte(normal.z), TONE_ONE]);
         }
+    }
+    texels
+}
+
+/// [`heights_to_normals`], each texel's colour multiplied by `tone(u, v)` at its centre.
+pub fn heights_to_texels(
+    size: u32,
+    strength: Real,
+    height: impl Fn(Real, Real) -> Real,
+    tone: impl Fn(Real, Real) -> Real,
+) -> Vec<[u8; 4]> {
+    let mut texels = heights_to_normals(size, strength, height);
+    let n = Real::from(size.max(1));
+    for (k, texel) in texels.iter_mut().enumerate() {
+        let (i, j) = (k as u32 % size, k as u32 / size);
+        texel[3] = tone_byte(tone((Real::from(i) + 0.5) / n, (Real::from(j) + 0.5) / n));
     }
     texels
 }
@@ -239,7 +282,7 @@ mod tests {
     #[test]
     fn a_flat_field_is_the_flat_map() {
         let texels = heights_to_normals(8, 1.0, |_, _| 0.3);
-        assert!(texels.iter().all(|t| *t == [128, 128, 255, 255]));
+        assert!(texels.iter().all(|t| *t == FLAT));
     }
 
     #[test]
@@ -272,5 +315,24 @@ mod tests {
         // The ridges' last level is their mean: flat.
         let last = &texels[2 * per_layer - 4..];
         assert_eq!(last, &FLAT);
+    }
+
+    #[test]
+    fn a_tone_is_carried_and_averaged_down() {
+        let mut maps = NormalMaps::new(4);
+        maps.add_toned(0.0, |_, _| 0.0, |u, _| if u < 0.5 { 0.5 } else { 1.5 });
+        let texels = maps.texels_with_mips();
+        let per_layer = (16 + 4 + 1) * 4;
+        let layer = &texels[per_layer..];
+        assert_eq!(
+            (layer[3], layer[2 * 4 + 3]),
+            (tone_byte(0.5), tone_byte(1.5))
+        );
+        // Each half's a level down, and their mean at the last.
+        assert_eq!(
+            (layer[16 * 4 + 3], layer[17 * 4 + 3]),
+            (tone_byte(0.5), tone_byte(1.5))
+        );
+        assert_eq!(layer[per_layer - 1], TONE_ONE);
     }
 }
