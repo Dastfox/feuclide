@@ -149,7 +149,9 @@ fn paint(in: Varyings) -> vec4<f32> {
     let p = geo_normalize_point(in.point);
     let far_side = in.side > 0.5;
     let d = geo_seen_distance(p, far_side);
-    let texel = textureSample(normal_maps, normal_sampler, in.uv.xy, i32(in.uv.z));
+    // The layer arrives interpolated, a hair either side of its whole number: rounded, never
+    // cut down to the layer before.
+    let texel = textureSample(normal_maps, normal_sampler, in.uv.xy, i32(round(in.uv.z)));
     let flattened = map_flattened(d);
     let n = mapped_normal(p, geo_project_tangent(p, in.normal), in.uv, in.tangent, texel, flattened);
     // The map's tone, what the colour is multiplied by (its alpha × 1.5: `fk_render::TONE_ONE`
