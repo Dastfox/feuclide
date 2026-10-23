@@ -4,11 +4,13 @@
 #import fk::view::lighting
 #import fk::geometry::{geo_distance, geo_towards, geo_inner, geo_light_falloff}
 
-// Light in a few soft-edged bands, so surfaces read as painted rather than shaded.
+// Light in a few soft-edged bands, so surfaces read as painted rather than shaded; melted
+// `lighting.smoothness` of the way into the light as it is.
 fn banded(light: f32) -> f32 {
     let x = clamp(light, 0.0, 1.0) * lighting.bands;
     let band = floor(x);
-    return (band + smoothstep(0.42, 0.58, x - band)) / lighting.bands;
+    let painted = (band + smoothstep(0.42, 0.58, x - band)) / lighting.bands;
+    return mix(painted, clamp(light, 0.0, 1.0), lighting.smoothness);
 }
 
 // The light of the point lights on a surface at `p` with normal `n` (a tangent vector there),

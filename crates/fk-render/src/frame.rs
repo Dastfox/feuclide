@@ -29,6 +29,9 @@ pub struct Lighting {
     pub fog_density: Real,
     /// Number of light bands between shadow and full light.
     pub bands: u32,
+    /// How far the bands melt into a smooth light, the sun's and the point lights' alike: 0
+    /// painted in [`bands`](Self::bands), 1 smooth, a mix between.
+    pub smooth: Real,
 }
 
 impl Default for Lighting {
@@ -40,6 +43,7 @@ impl Default for Lighting {
             sky: Sky::default(),
             fog_density: 0.006,
             bands: 3,
+            smooth: 0.0,
         }
     }
 }
@@ -543,6 +547,7 @@ pub(crate) struct LightingBlock {
     pub bands: f32,
     pub stars: f32,
     pub star_density: f32,
+    pub smoothness: f32,
     /// Columns of the matrix from eye coordinates to the shadow map's clip space.
     pub shadow_matrix: [Vec4f; 4],
     /// On (1) or off (0), one texel in uv, the soft edge in texels, the normal offset.

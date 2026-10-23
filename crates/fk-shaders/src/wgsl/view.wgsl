@@ -77,6 +77,8 @@ struct Lighting {
     // radian.
     stars: f32,
     star_density: f32,
+    // How far the bands melt into a smooth light: 0 banded, 1 smooth.
+    smoothness: f32,
     // The shadow map of the directional light: eye coordinates to the light's clip space (x
     // and y in [-1, 1] across the map, depth in [0, 1] away from the light). Flat space only.
     shadow_matrix: mat4x4<f32>,

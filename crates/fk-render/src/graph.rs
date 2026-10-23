@@ -1414,6 +1414,7 @@ pub(crate) fn frame_blocks<G: GpuGeometry>(
         bands: lighting.bands.max(1) as f32,
         stars: sky.stars.max(0.0) as f32,
         star_density: sky.star_density.max(1.0) as f32,
+        smoothness: lighting.smooth.clamp(0.0, 1.0) as f32,
         shadow_matrix: shadow.map_or([Vec4f::default(); 4], |shadow| {
             matrix_columns(&shadow.matrix).map(Vec4f)
         }),
