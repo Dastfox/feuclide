@@ -92,12 +92,14 @@ impl DepthResolve {
     }
 
     /// Records the resolve of the depth `bind_group` reads into `into`, a single-sample depth
-    /// target of the same size.
+    /// target of the same size: within `scissor` only (pixels: `x`, `y`, width, height), if
+    /// given, the rest left far.
     pub(crate) fn resolve(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         bind_group: &wgpu::BindGroup,
         into: &wgpu::TextureView,
+        scissor: Option<[u32; 4]>,
     ) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("fk late depth"),
@@ -114,6 +116,9 @@ impl DepthResolve {
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, bind_group, &[]);
+        if let Some([x, y, w, h]) = scissor {
+            pass.set_scissor_rect(x, y, w, h);
+        }
         pass.draw(0..3, 0..1);
     }
 }

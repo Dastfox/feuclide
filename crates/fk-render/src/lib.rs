@@ -92,7 +92,7 @@ use fk_geometry::GpuGeometry;
 
 pub use carried::{CarriedImage, HeldImage};
 pub use color::Color;
-pub use cull::Frustum;
+pub use cull::{Frustum, ball_on_screen};
 pub use deform::{CastsNoShadow, Deform, DeformHandle, DeformShader, Deforms};
 pub use effect::{
     EffectFactory, EffectFrame, EffectSetup, EffectTargets, GradeShader, ImageEffect, SkyFigure,

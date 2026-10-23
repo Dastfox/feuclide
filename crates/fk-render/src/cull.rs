@@ -90,6 +90,69 @@ impl Frustum {
     }
 }
 
+/// The rectangle of the image a ball of radius `radius` about `centre` (relative to the eye)
+/// covers, seen by a camera of vertical field of view `fov_y` and an image `aspect` times as wide
+/// as high: `[x0, y0, x1, y1]` in normalized device coordinates (`-1` to `1`, `y` up), a little
+/// larger than the ball's outline, empty (`x0 > x1` or `y0 > y1`) when it is out of the image.
+/// `None` where it cannot be bounded on the image: the eye in the ball, or the ball reaching
+/// behind the eye.
+pub fn ball_on_screen<G: Geometry>(
+    fov_y: Real,
+    aspect: Real,
+    centre: &G::Point,
+    radius: Real,
+) -> Option<[Real; 4]> {
+    let origin = G::origin();
+    let d = G::distance(&origin, centre);
+    if d <= radius {
+        return None;
+    }
+    let sin_alpha = angular_sin(G::constant_curvature(), d, radius)?;
+    let v = G::log(&origin, centre)?;
+    let u = Vector3::from_fn(|i, _| G::inner(&origin, &v, &G::origin_frame(i))) / d;
+    // The cone of the ball's outline about `u`, its half-angle widened so that the sixteen
+    // directions round its rim make a polygon round the circle.
+    const ROUND: usize = 16;
+    let alpha = (sin_alpha.clamp(0.0, 1.0).asin() / (std::f64::consts::PI / ROUND as Real).cos())
+        .min(std::f64::consts::FRAC_PI_2);
+    // Ahead is -z: a rim reaching to the eye's plane cannot be projected.
+    let ahead = (-u.z).clamp(-1.0, 1.0).acos();
+    if ahead + alpha >= std::f64::consts::FRAC_PI_2 - 1e-3 {
+        return None;
+    }
+    let side = if u.x.abs() < 0.9 {
+        Vector3::x()
+    } else {
+        Vector3::y()
+    };
+    let a = u.cross(&side).normalize();
+    let b = u.cross(&a);
+    let (tan_y, (sin, cos)) = ((fov_y / 2.0).tan(), alpha.sin_cos());
+    let mut rect = [
+        Real::INFINITY,
+        Real::INFINITY,
+        Real::NEG_INFINITY,
+        Real::NEG_INFINITY,
+    ];
+    for k in 0..ROUND {
+        let turn = std::f64::consts::TAU * k as Real / ROUND as Real;
+        let rim = u * cos + (a * turn.cos() + b * turn.sin()) * sin;
+        let (x, y) = (rim.x / -rim.z / (tan_y * aspect), rim.y / -rim.z / tan_y);
+        rect = [
+            rect[0].min(x),
+            rect[1].min(y),
+            rect[2].max(x),
+            rect[3].max(y),
+        ];
+    }
+    Some([
+        rect[0].max(-1.0),
+        rect[1].max(-1.0),
+        rect[2].min(1.0),
+        rect[3].min(1.0),
+    ])
+}
+
 impl Frustum {
     /// Whether the shadow of the ball of radius `radius` about `centre` (relative to the eye),
     /// cast along `along` (how far and which way the light carries it, in the eye's frame), can
@@ -146,6 +209,26 @@ mod tests {
 
     fn sees(frustum: &Frustum, x: Real, y: Real, z: Real, r: Real) -> bool {
         frustum.sees::<E3>(&Point3::new(x, y, z), r)
+    }
+
+    #[test]
+    fn a_ball_is_bounded_on_the_screen() {
+        let on = |x: Real, y: Real, z: Real, r: Real| {
+            ball_on_screen::<E3>(FRAC_PI_2, 1.0, &Point3::new(x, y, z), r)
+        };
+        // Straight ahead, a tenth of the way across each side.
+        let [x0, y0, x1, y1] = on(0.0, 0.0, -10.0, 1.0).unwrap();
+        assert!(
+            x0 < -0.1 && x0 > -0.12 && x1 > 0.1 && x1 < 0.12,
+            "{x0} {x1}"
+        );
+        assert!((y0 + x1).abs() < 1e-9 && (y1 - x1).abs() < 1e-9);
+        // Off to the right, out of the image: empty.
+        let [x0, _, x1, _] = on(30.0, 0.0, -10.0, 1.0).unwrap();
+        assert!(x0 > x1 || x0 >= 1.0, "{x0} {x1}");
+        // The eye in it, or the ball reaching behind it: the whole image.
+        assert!(on(0.0, 0.0, -0.5, 1.0).is_none());
+        assert!(on(2.0, 0.0, -0.5, 1.0).is_none());
     }
 
     #[test]

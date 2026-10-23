@@ -160,6 +160,12 @@ pub trait GeometryRenderer<G: GpuGeometry>: Send + Sync + 'static {
         let _ = (pass, bindings);
     }
 
+    /// The rectangle of the image (in pixels: `x`, `y` from the top left, width, height) that
+    /// all it draws late lies in, if it knows one; `None` for all of the image, the default.
+    fn late_scissor(&self) -> Option<[u32; 4]> {
+        None
+    }
+
     /// Instances drawn and culled by the last [`queue`](Self::queue), and draw calls.
     fn stats(&self) -> crate::RenderStats {
         crate::RenderStats::default()

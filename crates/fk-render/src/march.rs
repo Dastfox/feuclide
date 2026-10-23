@@ -12,6 +12,7 @@ use bevy_ecs::world::World;
 use encase::ShaderType;
 use fk_geometry::{GpuGeometry, GroupElement, SampledMetric};
 use fk_math::Real;
+use fk_math::nalgebra::Vector3;
 use fk_scene::ViewRelative;
 use fk_shaders::Shader;
 
@@ -399,6 +400,11 @@ pub struct RayMarched {
     /// the layer render. In the [`Elsewhere`](crate::Elsewhere) eye's image, which no effect
     /// works on, it is drawn as the others.
     pub late: bool,
+    /// Balls (their middles and radii, in the scene's own units and frame, as the field is)
+    /// holding all of it that can be seen, for a scene drawn [`late`](Self::late): only the
+    /// rectangle of the image round them is marched, nothing outside it, and none at all with
+    /// no ball. `None`, the whole image, as for every other scene.
+    pub bounds: Option<Vec<(Vector3<Real>, Real)>>,
 }
 
 impl RayMarched {
@@ -420,6 +426,7 @@ impl RayMarched {
             interleave: 1,
             interleave_moving: 0,
             late: false,
+            bounds: None,
         }
     }
 }
@@ -603,6 +610,9 @@ struct Scene {
     over: bool,
     /// Drawn after the image effects ([`RayMarched::late`]), not in the opaque pass.
     late: bool,
+    /// The rectangle of the image it is drawn in, in pixels (`x`, `y`, width, height), late,
+    /// round its [`RayMarched::bounds`]; `None` for all of it. Empty, it is not drawn.
+    scissor: Option<[u32; 4]>,
 }
 
 type Marched<G> = (
@@ -643,6 +653,8 @@ pub struct RayMarchPipeline<G: GpuGeometry> {
     scenes: Vec<Scene>,
     /// How many of `scenes` are drawn this frame.
     drawn: usize,
+    /// The size of the image the last `prepare` was for, in pixels.
+    size: [u32; 2],
     /// Whether the last `prepare` was for the other eye's image, where every scene is drawn in
     /// the opaque pass.
     elsewhere: bool,
@@ -783,6 +795,7 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
             query: None,
             scenes: Vec::new(),
             drawn: 0,
+            size: [1, 1],
             frame: 0,
             last_eye: None,
             elsewhere: false,
@@ -1025,6 +1038,7 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
                 layer: false,
                 over: false,
                 late: false,
+                scissor: None,
             });
         }
         &mut self.scenes[index]
@@ -1122,6 +1136,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
             })
             .collect();
         self.drawn = 0;
+        self.size = view.size;
         // Only fields that compiled are drawn, once the pipelines they draw with are built:
         // those that are not yet are asked for, and their scenes left out meanwhile.
         let mut building = Vec::new();
@@ -1283,6 +1298,14 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
             scene.coarsened = cones > 0;
             scene.over = marched.over;
             scene.late = late;
+            scene.scissor = if late {
+                marched
+                    .bounds
+                    .as_ref()
+                    .and_then(|balls| scissor::<G>(balls, &relative, marched.scale, view))
+            } else {
+                None
+            };
             if let Some(targets) = targets {
                 scene.half = Some(targets);
             }
@@ -1459,6 +1482,10 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
         self.draw(pass, bindings, Draws::Late);
     }
 
+    fn late_scissor(&self) -> Option<[u32; 4]> {
+        self.late_rect()
+    }
+
     fn stats(&self) -> RenderStats {
         RenderStats {
             drawn: self.drawn,
@@ -1523,9 +1550,89 @@ impl<G: GpuGeometry> RayMarchPipeline<G> {
             }
             pass.set_bind_group(0, bindings.frame, &[]);
             pass.set_bind_group(1, &scene.bind_group, &[]);
-            pass.draw(0..3, 0..1);
+            match scene.scissor.filter(|_| scene.late) {
+                Some([_, _, 0, _] | [_, _, _, 0]) => {}
+                Some([x, y, w, h]) => {
+                    pass.set_scissor_rect(x, y, w, h);
+                    pass.draw(0..3, 0..1);
+                    pass.set_scissor_rect(0, 0, self.size[0], self.size[1]);
+                }
+                None => pass.draw(0..3, 0..1),
+            }
         }
     }
+
+    /// The rectangle round every scene drawn late, in pixels, if each is bounded
+    /// ([`RayMarched::bounds`]): all that the late pass touches. `None` for all of the image.
+    fn late_rect(&self) -> Option<[u32; 4]> {
+        let late = self.scenes[..self.drawn].iter().filter(|scene| scene.late);
+        let mut union: Option<[u32; 4]> = None;
+        for scene in late {
+            let [x, y, w, h] = scene.scissor?;
+            if w == 0 || h == 0 {
+                continue;
+            }
+            union = Some(match union {
+                None => [x, y, w, h],
+                Some([ux, uy, uw, uh]) => {
+                    let (x0, y0) = (ux.min(x), uy.min(y));
+                    let (x1, y1) = ((ux + uw).max(x + w), (uy + uh).max(y + h));
+                    [x0, y0, x1 - x0, y1 - y0]
+                }
+            });
+        }
+        Some(union.unwrap_or([0, 0, 0, 0]))
+    }
+}
+
+/// The rectangle of the image, in pixels (`x`, `y` from the top left, width, height), round the
+/// `balls` of a scene posed at `relative` (to the eye) at `scale`: `None` where one cannot be
+/// bounded (the eye in it), empty where none is in sight. A pixel of margin all round.
+fn scissor<G: GpuGeometry>(
+    balls: &[(Vector3<Real>, Real)],
+    relative: &G::Isometry,
+    scale: Real,
+    view: &FrameView<G>,
+) -> Option<[u32; 4]> {
+    let fov_y = view.view.camera.fov_y;
+    let origin = G::origin();
+    let mut rect = [
+        Real::INFINITY,
+        Real::INFINITY,
+        Real::NEG_INFINITY,
+        Real::NEG_INFINITY,
+    ];
+    for (centre, radius) in balls {
+        let at = G::apply(
+            relative,
+            &G::exp(&origin, &crate::mesh::tangent::<G>(&(centre / scale))),
+        );
+        let [x0, y0, x1, y1] =
+            crate::cull::ball_on_screen::<G>(fov_y, view.aspect, &at, radius / scale)?;
+        if x0 < x1 && y0 < y1 {
+            rect = [
+                rect[0].min(x0),
+                rect[1].min(y0),
+                rect[2].max(x1),
+                rect[3].max(y1),
+            ];
+        }
+    }
+    if rect[0] >= rect[2] || rect[1] >= rect[3] {
+        return Some([0, 0, 0, 0]);
+    }
+    let [w, h] = view.size.map(Real::from);
+    // NDC y up; pixels from the top.
+    let px0 = ((rect[0] * 0.5 + 0.5) * w - 1.0).floor().clamp(0.0, w);
+    let px1 = ((rect[2] * 0.5 + 0.5) * w + 1.0).ceil().clamp(0.0, w);
+    let py0 = ((0.5 - rect[3] * 0.5) * h - 1.0).floor().clamp(0.0, h);
+    let py1 = ((0.5 - rect[1] * 0.5) * h + 1.0).ceil().clamp(0.0, h);
+    Some([
+        px0 as u32,
+        py0 as u32,
+        (px1 - px0) as u32,
+        (py1 - py0) as u32,
+    ])
 }
 
 /// Which draws of the scenes: those of the image, those on the layer, those drawn late.

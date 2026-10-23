@@ -915,9 +915,27 @@ impl<G: GpuGeometry> RenderState<G> {
         // Late: what is drawn over the image as the effects left it, against the depth as the
         // opaque pass left it, one sample.
         if view.is_some() && self.renderers.iter().any(|renderer| renderer.has_late()) {
+            // All they draw late may lie in one rectangle: nothing outside it is touched.
+            let scissor = self
+                .renderers
+                .iter()
+                .filter(|renderer| renderer.has_late())
+                .map(|renderer| renderer.late_scissor())
+                .try_fold(None::<[u32; 4]>, |union, rect| {
+                    let [x, y, w, h] = rect?;
+                    Some(Some(match union {
+                        None => [x, y, w, h],
+                        Some([ux, uy, uw, uh]) => {
+                            let (x0, y0) = (ux.min(x), uy.min(y));
+                            let (x1, y1) = ((ux + uw).max(x + w), (uy + uh).max(y + h));
+                            [x0, y0, x1 - x0, y1 - y0]
+                        }
+                    }))
+                })
+                .flatten();
             let depth = match (&self.late, &targets.late) {
                 (Some(resolve), Some(late)) => {
-                    resolve.resolve(&mut encoder, &late.bind_group, &late.depth);
+                    resolve.resolve(&mut encoder, &late.bind_group, &late.depth, scissor);
                     &late.depth
                 }
                 _ => &targets.depth,
