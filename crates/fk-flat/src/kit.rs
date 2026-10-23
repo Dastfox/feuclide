@@ -9,7 +9,8 @@ use fk_geometry::GpuGeometry;
 use fk_geometry::{Geometry, GroupElement};
 use fk_geometry_euclidean::{E3, Se3 as Isometry};
 use fk_math::Real;
-use fk_math::nalgebra::{Point3, UnitQuaternion, Vector3};
+use fk_math::nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
+use fk_math::noise::lattice_hash;
 use fk_math::sdf::cuboid;
 use fk_physics::DistanceField;
 use fk_render::{Mesh, MeshBuilder, NormalMap, axis, box_uv, shapes};
@@ -207,6 +208,19 @@ impl<M: Copy> Kit<M> {
         map_of: impl Fn(M) -> Option<(NormalMap, Real)>,
         default: Option<M>,
     ) -> MeshBuilder {
+        self.surfaced_grained(map_of, |_| false, default)
+    }
+
+    /// [`surfaced`](Self::surfaced), the materials `grained` says run along their piece laid
+    /// along it, as wood is: on every face holding the piece's long way (its vertices' widest
+    /// spread) v runs along it and u across, and each piece takes its own part of the tile, as
+    /// boards cut apart; on its ends, as [`box_uv`] lays them.
+    pub fn surfaced_grained(
+        &self,
+        map_of: impl Fn(M) -> Option<(NormalMap, Real)>,
+        grained: impl Fn(M) -> bool,
+        default: Option<M>,
+    ) -> MeshBuilder {
         let fallback = if self.bare {
             None
         } else {
@@ -217,6 +231,7 @@ impl<M: Copy> Kit<M> {
             return self.mesh.clone();
         }
         let (positions, normals) = (self.mesh.positions(), self.mesh.normals());
+        let along = self.long_ways(|i| self.surfaces[i].or(fallback).is_some_and(&grained));
         let mut out = MeshBuilder::new();
         let mut split: HashMap<(u32, usize), u32> = HashMap::new();
         for t in self.mesh.indices().as_chunks::<3>().0 {
@@ -235,7 +250,11 @@ impl<M: Copy> Kit<M> {
                     let (p, n) = (positions[i as usize], normals[i as usize]);
                     let at = match map {
                         Some((map, metres)) => {
-                            let uv = box_uv(&p, &face).map(|x| x / metres);
+                            let part = self.parts[i as usize];
+                            let uv = match along.get(&part) {
+                                Some(long) => grain_uv(&p, &face, long, part, metres),
+                                None => box_uv(&p, &face).map(|x| x / metres),
+                            };
                             out.vertex_mapped(p, n, uv, Some(map))
                         }
                         None => out.vertex(p, n),
@@ -248,6 +267,55 @@ impl<M: Copy> Kit<M> {
         }
         out
     }
+
+    /// The long way of each part whose vertices are `grained`: the axis its vertices spread
+    /// along most.
+    fn long_ways(&self, grained: impl Fn(usize) -> bool) -> HashMap<u32, Vector3<Real>> {
+        let mut sums: HashMap<u32, (Real, Vector3<Real>, Matrix3<Real>)> = HashMap::new();
+        for (i, p) in self.mesh.positions().iter().enumerate() {
+            if grained(i) {
+                let sum =
+                    sums.entry(self.parts[i])
+                        .or_insert((0.0, Vector3::zeros(), Matrix3::zeros()));
+                sum.0 += 1.0;
+                sum.1 += p;
+                sum.2 += p * p.transpose();
+            }
+        }
+        sums.into_iter()
+            .map(|(part, (count, sum, outer))| {
+                let mean = sum / count;
+                let spread = (outer / count - mean * mean.transpose()).symmetric_eigen();
+                let widest = spread.eigenvalues.imax();
+                (part, spread.eigenvectors.column(widest).normalize())
+            })
+            .collect()
+    }
+}
+
+/// Texture coordinates of `p` on a face of normal `face`, in tiles `metres` across, laid along a
+/// piece's `long` way (v along it, u across) where the face holds it and as [`box_uv`] on its
+/// ends; shifted by the piece's own share of a tile, the same for every vertex of `part`.
+fn grain_uv(
+    p: &Vector3<Real>,
+    face: &Vector3<Real>,
+    long: &Vector3<Real>,
+    part: u32,
+    metres: Real,
+) -> [Real; 2] {
+    // The face's main axis stands in for it, so the vertices a face shares with the bevels
+    // round it on that axis take one uv.
+    let a = axis(face);
+    let main = Vector3::ith(a, 1.0);
+    let lying = long - main * long[a];
+    let [u, v] = if lying.norm() > 0.5 {
+        let v = lying.normalize();
+        [p.dot(&main.cross(&v)), p.dot(&v)]
+    } else {
+        box_uv(p, face)
+    };
+    let shift = |k: i64| lattice_hash(i64::from(part), k, 0x6a1e);
+    [u / metres + shift(0), v / metres + shift(1)]
 }
 
 /// A box standing on the ground: its middle, its half-extents and its turn about the vertical
@@ -473,5 +541,61 @@ mod tests {
                 .any(|(q, s)| q == p && s == shade);
             assert!(kept, "{p}: {shade:?}");
         }
+    }
+
+    #[test]
+    fn the_grain_runs_along_each_piece() {
+        // A board lying along x and one standing along y, both grained; a box that is not.
+        let mut kit = Kit::<u8>::default();
+        kit.add_as(
+            &shapes::cuboid(Vector3::new(1.0, 0.05, 0.1)),
+            &translation(Vector3::zeros()),
+            1,
+        );
+        kit.add_as(
+            &shapes::cuboid(Vector3::new(0.1, 1.0, 0.05)),
+            &translation(Vector3::new(5.0, 0.0, 0.0)),
+            1,
+        );
+        kit.add_as(
+            &shapes::cuboid(Vector3::new(1.0, 0.05, 0.1)),
+            &translation(Vector3::new(9.0, 0.0, 0.0)),
+            2,
+        );
+        let mut maps = fk_render::NormalMaps::new(4);
+        let map = maps.add(vec![[128, 128, 255, 255]; 16]);
+        let laid = kit.surfaced_grained(|_| Some((map, 1.0)), |m| m == 1, None);
+        let (positions, uvs) = (laid.positions(), laid.uvs());
+        // On the faces facing z, along each edge: how far v and u go against how far x and y do.
+        let mut fronts = [0; 3];
+        for t in laid.indices().as_chunks::<3>().0 {
+            let [a, b, c] = t.map(|i| positions[i as usize]);
+            if (b - a).cross(&(c - a)).normalize().z.abs() < 0.99 {
+                continue;
+            }
+            let piece = (a.x / 4.0).round() as usize;
+            fronts[piece] += 1;
+            for (i, j) in [(t[0], t[1]), (t[1], t[2])] {
+                let (d, w) = (
+                    positions[i as usize] - positions[j as usize],
+                    [0, 1].map(|k| uvs[i as usize][k] - uvs[j as usize][k]),
+                );
+                // v along the piece (x, then y), u across; the box as box projection lays it.
+                let [along, across] = if piece == 1 { [d.y, d.x] } else { [d.x, d.y] };
+                if piece == 2 {
+                    assert!((w[0] - d.x).abs() < 1e-9 && (w[1] - d.y).abs() < 1e-9);
+                } else {
+                    assert!(
+                        (w[1].abs() - along.abs()).abs() < 1e-9,
+                        "{piece}: {d} {w:?}"
+                    );
+                    assert!(
+                        (w[0].abs() - across.abs()).abs() < 1e-9,
+                        "{piece}: {d} {w:?}"
+                    );
+                }
+            }
+        }
+        assert!(fronts.iter().all(|&n| n >= 2), "{fronts:?}");
     }
 }
