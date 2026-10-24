@@ -46,6 +46,13 @@
 //! reading the world block and built from the `fk::displace` helpers. That is how a landscape
 //! follows a game value, in the opaque and the shadow passes alike, with no work on the CPU.
 //!
+//! # Seeing through
+//!
+//! Entities marked [`SeeThrough`] are cut away within the cones of the [`Parting`]: their
+//! fragments there are discarded and the sky behind them shows (a forest opened round the
+//! moon), while every surface not marked still hides it. They are drawn by pipelines of their
+//! own, so that no other surface pays for it, and cast their shadows whole.
+//!
 //! # Depth
 //!
 //! Depth is reverse-Z hardware perspective depth (1 at `near`, 0 at `far`), never written from
@@ -71,6 +78,7 @@ mod mesh;
 mod normal_map;
 pub mod offscreen;
 mod overlay;
+mod parting;
 pub mod perf;
 mod post;
 pub mod quotient;
@@ -118,6 +126,7 @@ pub use normal_map::{
 };
 pub use offscreen::{Image, Offscreen, Paths};
 pub use overlay::Overlay;
+pub use parting::{MAX_PARTINGS, Part, Parting, SeeThrough};
 pub use quotient::{QuotientView, Unrepeated};
 pub use raster::RasterPipeline;
 pub use renderer::{
@@ -141,8 +150,8 @@ pub enum RenderSystems {
 ///
 /// Inserts [`Meshes`], [`Deforms`], [`Sdfs`], [`RayMarching`], [`Lighting`], [`Shadows`],
 /// [`WorldUniforms`], [`PostSettings`], [`GradeValues`], [`LayerRender`], [`FrameCapture`],
-/// [`RenderStats`], [`Vsync`], [`Screenshots`], [`CarriedImage`], [`Elsewhere`] and
-/// [`Overlay`]. The device ([`Gpu`]) is opened in [`Startup`] once the window exists, with the
+/// [`RenderStats`], [`Vsync`], [`Screenshots`], [`CarriedImage`], [`Elsewhere`], [`Parting`]
+/// and [`Overlay`]. The device ([`Gpu`]) is opened in [`Startup`] once the window exists, with the
 /// [`GradeShader`] and the [`SkyFigure`] there then; without a window nothing is drawn. Once it
 /// draws, it also writes [`DiscsSeen`].
 ///
@@ -183,6 +192,7 @@ impl<G: GpuGeometry> Plugin for RenderPlugin<G> {
             .init_resource::<Elsewhere<G>>()
             .init_resource::<OtherEyes<G>>()
             .init_resource::<Overlay>()
+            .init_resource::<Parting>()
             .add_systems(Startup, graph::start::<G>)
             .add_systems(Update, (screenshot::capture_once, perf::record))
             .add_systems(Render, graph::render::<G>.in_set(RenderSystems::Draw));

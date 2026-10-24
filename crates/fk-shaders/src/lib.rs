@@ -154,7 +154,15 @@ impl Shader {
     /// Its entry points.
     pub fn entry_points(self) -> &'static [&'static str] {
         match self {
-            Self::Raster => &["vertex", "fragment", "shadow_vertex", "window_fragment"],
+            Self::Raster => &[
+                "vertex",
+                "fragment",
+                "clipped_fragment",
+                "see_through_fragment",
+                "clipped_see_through_fragment",
+                "shadow_vertex",
+                "window_fragment",
+            ],
             Self::Post => &["vertex", "fragment", "text_fragment"],
             Self::Settle | Self::Sky => &["vertex", "fragment"],
             Self::RayMarch => &[

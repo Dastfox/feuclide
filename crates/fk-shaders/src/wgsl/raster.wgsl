@@ -1,5 +1,6 @@
 // The raster pipeline: instanced meshes in flat painted colours, and windows onto the scene
-// seen from another eye (`window_fragment`).
+// seen from another eye (`window_fragment`). The surfaces to be seen through have fragment
+// entry points of their own (`see_through_fragment`), cut away in the parting's cones.
 //
 // Every instance carries its camera-relative isometry as a matrix, so the vertex stage is the
 // same `mat4 · v` in every geometry, followed by the geometry's projection. Before that, the
@@ -61,6 +62,8 @@ struct Varyings {
     @location(5) tangent: vec4<f32>,
     // 1 where the instance is seen the long way round a closed space (on a sphere), else 0.
     @location(6) side: f32,
+    // The vertex as the mesh has it, before the deform: where the parting's edge strays.
+    @location(7) model: vec3<f32>,
 }
 
 fn instance_iso(in: Vertex) -> mat4x4<f32> {
@@ -89,6 +92,7 @@ fn vertex(in: Vertex) -> Varyings {
     out.tangent = geo_apply_iso(iso, in.tangent);
     out.color = vec4<f32>(in.color.rgb * vec3<f32>(in.shade.rgb) / 128.0, in.color.w);
     out.haze = shaped.haze;
+    out.model = in.position.xyz;
     return out;
 }
 
@@ -143,6 +147,64 @@ fn clipped_fragment(in: Varyings) -> @location(0) vec4<f32> {
         discard;
     }
     return paint(in);
+}
+
+// The same for the surfaces marked to be seen through (`fk_render::SeeThrough`): cut away where
+// they stand in one of the parting's cones. Pipelines of their own, so that no other surface
+// ever discards.
+@fragment
+fn see_through_fragment(in: Varyings) -> @location(0) vec4<f32> {
+    if parted(in) {
+        discard;
+    }
+    return paint(in);
+}
+
+// Both: cut off at the view's clip plane and cut away in the parting's cones, for the surfaces
+// to be seen through in the other eye's image.
+@fragment
+fn clipped_see_through_fragment(in: Varyings) -> @location(0) vec4<f32> {
+    if dot(view.clip, in.point) < 0.0 || parted(in) {
+        discard;
+    }
+    return paint(in);
+}
+
+// A hash of a cell of the mesh's space, in [0, 1].
+fn parting_hash(cell: vec3<i32>) -> f32 {
+    var h = (bitcast<u32>(cell.x) * 73856093u) ^ (bitcast<u32>(cell.y) * 19349663u)
+        ^ (bitcast<u32>(cell.z) * 83492791u);
+    h = (h ^ (h >> 16u)) * 0x7feb352du;
+    h = (h ^ (h >> 15u)) * 0x846ca68bu;
+    h = h ^ (h >> 16u);
+    return f32(h) / 4294967295.0;
+}
+
+// Whether the fragment stands in one of the parting's cones, from its near distance on: seen
+// in a direction within the cone's half-angle of its axis, that half-angle strayed by up to its
+// ragged either way by a hash of the cell of the mesh's space the fragment is in, so that its
+// edge is ragged on the surface and stays put on it as the eye moves.
+fn parted(in: Varyings) -> bool {
+    let count = min(u32(lighting.part_count.x), 4u);
+    if count == 0u {
+        return false;
+    }
+    let p = geo_normalize_point(in.point);
+    let far_side = in.side > 0.5;
+    let d = geo_seen_distance(p, far_side);
+    let seen = geo_seen_direction(p, far_side);
+    for (var i = 0u; i < count; i++) {
+        let part = lighting.parts[i];
+        if d < part.shape.z {
+            continue;
+        }
+        let stray = parting_hash(vec3<i32>(floor(in.model / max(part.shape.y, 1e-4)))) * 2.0 - 1.0;
+        let edge = clamp(part.direction.w + part.shape.x * stray, 0.0, 3.14159265);
+        if dot(seen, part.direction.xyz) > cos(edge) {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn paint(in: Varyings) -> vec4<f32> {

@@ -20,14 +20,15 @@ use crate::elsewhere::{
     Elsewhere, ElsewhereShared, ElsewhereTargets, MAX_OTHER_EYES, OtherEye, OtherEyes,
 };
 use crate::frame::{
-    DiscBlock, LightingBlock, MAX_SKY_DISCS, PointLightBlock, SkyDiscs, ViewBlock, WorldBlock,
-    uniform_bytes,
+    DiscBlock, LightingBlock, MAX_SKY_DISCS, PartBlock, PointLightBlock, SkyDiscs, ViewBlock,
+    WorldBlock, uniform_bytes,
 };
 use crate::gpu::{Vec2f, Vec4f, matrix_columns};
 use crate::late::DepthResolve;
 use crate::light::{MAX_POINT_LIGHTS, PointLight, Spot};
 use crate::mesh::tangent;
 use crate::overlay::{Overlay, OverlayPass};
+use crate::parting::Parting;
 use crate::post::PostPass;
 use crate::renderer::{FrameBindings, FrameView, GeometryRenderer, RendererFactory, RendererSetup};
 use crate::screenshot::{self, Screenshots};
@@ -1417,6 +1418,9 @@ pub(crate) fn frame_blocks<G: GpuGeometry>(
     let extra = world
         .get_resource::<SkyDiscs>()
         .map_or(&[][..], |discs| &discs.0[..]);
+    let parts = world
+        .get_resource::<Parting>()
+        .map_or(&[][..], |parting| parting.used());
     let lighting_block = LightingBlock {
         sun_direction: Vec4f::from_real(&G::embed_tangent(&origin, &carry(&lighting.sun))),
         sun_color: color(lighting.sun_color),
@@ -1462,6 +1466,20 @@ pub(crate) fn frame_blocks<G: GpuGeometry>(
         point_count: Vec4f([point_count as f32, 0.0, 0.0, 0.0]),
         discs: std::array::from_fn(|i| disc(extra.get(i).unwrap_or(&SkyDisc::default()))),
         disc_count: Vec4f([extra.len().min(MAX_SKY_DISCS) as f32, 0.0, 0.0, 0.0]),
+        parts: std::array::from_fn(|i| {
+            // A cone without an axis cuts nothing.
+            let part = parts.get(i).filter(|part| part.direction.norm() > 1e-12);
+            part.map_or_else(PartBlock::default, |part| PartBlock {
+                direction: in_eye(&part.direction, part.angle.max(0.0)),
+                shape: Vec4f([
+                    part.ragged.abs() as f32,
+                    part.cell.max(1e-4) as f32,
+                    part.near.max(0.0) as f32,
+                    0.0,
+                ]),
+            })
+        }),
+        part_count: Vec4f([parts.len() as f32, 0.0, 0.0, 0.0]),
     };
 
     let values = world
@@ -1614,4 +1632,78 @@ impl FrameBuffers {
 
 fn size_of_block<T: encase::ShaderType>() -> usize {
     T::min_size().get() as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use fk_geometry::Geometry;
+    use fk_geometry_euclidean::E3;
+    use fk_scene::{Camera, GlobalPose};
+
+    use super::*;
+    use crate::parting::{MAX_PARTINGS, Part};
+
+    type Isometry = <E3 as Geometry>::Isometry;
+
+    fn blocks_from(world: &mut World, eye: Isometry) -> FrameBlocks {
+        let entity = world.spawn_empty().id();
+        let active = ActiveView {
+            entity,
+            camera: Camera::<E3>::new(1.0, 0.1, 100.0),
+            eye: GlobalPose::new(eye),
+        };
+        let size = WindowSize {
+            width: 64,
+            height: 48,
+            scale_factor: 1.0,
+        };
+        frame_blocks(world, Some(&active), &Lighting::default(), None, 1, size)
+    }
+
+    #[test]
+    fn no_parting_uploads_no_cone() {
+        let mut world = World::new();
+        let blocks = blocks_from(&mut world, Isometry::identity());
+        assert_eq!(blocks.lighting.part_count.0[0], 0.0);
+        world.insert_resource(Parting::default());
+        let blocks = blocks_from(&mut world, Isometry::identity());
+        assert_eq!(blocks.lighting.part_count.0[0], 0.0);
+    }
+
+    /// The cones reach the shader in the eye's frame, as the sky's discs do: turned with the
+    /// eye, not moved by it, with their half-angle, ragged edge, cells and near distance; at
+    /// most [`MAX_PARTINGS`] of them.
+    #[test]
+    fn the_parting_is_carried_to_the_eyes_frame() {
+        let mut world = World::new();
+        let part = Part {
+            direction: Vector3::new(2.0, 0.0, 0.0),
+            angle: 0.3,
+            ragged: 0.05,
+            cell: 0.5,
+            near: 4.0,
+        };
+        world.insert_resource(Parting(vec![part; MAX_PARTINGS + 2]));
+        let turn = Isometry::exp(&(E3::rotation(&Vector3::z(), &Vector3::x()) * 0.7));
+        let moved = Isometry::exp(&E3::transvection(&Vector3::new(3.0, -1.0, 5.0)));
+        let eye = moved.compose(&turn);
+        let blocks = blocks_from(&mut world, eye);
+        let lighting = &blocks.lighting;
+        assert_eq!(lighting.part_count.0[0], MAX_PARTINGS as f32);
+        // The direction as the eye sees it: where its tip goes, from where its foot goes.
+        let inverse = eye.inverse();
+        let foot = E3::apply(&inverse, &E3::origin());
+        let tip = E3::apply(&inverse, &(E3::origin() + Vector3::x()));
+        let expected = tip - foot;
+        let block = &lighting.parts[0];
+        for i in 0..3 {
+            assert!(
+                (f64::from(block.direction.0[i]) - expected[i]).abs() < 1e-5,
+                "{:?} against {expected:?}",
+                block.direction.0
+            );
+        }
+        assert_eq!(block.direction.0[3], 0.3);
+        assert_eq!(block.shape.0[..3], [0.05, 0.5, 4.0]);
+    }
 }

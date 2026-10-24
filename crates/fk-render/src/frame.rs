@@ -560,6 +560,17 @@ pub(crate) struct LightingBlock {
     /// [`SkyDiscs`]; x of `disc_count` says how many are used.
     pub discs: [DiscBlock; MAX_SKY_DISCS],
     pub disc_count: Vec4f,
+    /// The [`Parting`](crate::Parting)'s cones; x of `part_count` says how many are used.
+    pub parts: [PartBlock; crate::parting::MAX_PARTINGS],
+    pub part_count: Vec4f,
+}
+
+#[derive(ShaderType, Clone, Copy, Default)]
+pub(crate) struct PartBlock {
+    /// The cone's axis in the eye's frame, and its half-angle.
+    pub direction: Vec4f,
+    /// How far its edge strays, the cells it strays by, how near nothing is cut.
+    pub shape: Vec4f,
 }
 
 #[derive(ShaderType, Clone, Copy, Default)]

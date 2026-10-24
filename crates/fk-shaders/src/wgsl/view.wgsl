@@ -52,6 +52,16 @@ struct PointLight {
     direction: vec4<f32>,
 }
 
+// A cone of directions from the eye where the surfaces marked to be seen through are cut away
+// (`fk_render::Parting`).
+struct Part {
+    // Unit direction of its axis, in the eye's frame; w its half-angle in radians.
+    direction: vec4<f32>,
+    // x: how far its edge strays either way, in radians; y: the size of the cells it strays
+    // by, in the mesh's own units; z: nearer the eye than this nothing is cut.
+    shape: vec4<f32>,
+}
+
 struct Lighting {
     // Direction towards the light, a tangent vector at the eye.
     sun_direction: vec4<f32>,
@@ -94,6 +104,10 @@ struct Lighting {
     // many are used.
     discs: array<Disc, 24>,
     disc_count: vec4<f32>,
+    // The cones the surfaces marked to be seen through are cut away in; x of `part_count` says
+    // how many are used.
+    parts: array<Part, 4>,
+    part_count: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> view: View;

@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use std::ops::Range;
 use std::time::Instant;
 
-use bevy_ecs::query::{Has, QueryState, Without};
+use bevy_ecs::query::{Has, QueryState, With, Without};
 use bevy_ecs::world::World;
 use bytemuck::{Pod, Zeroable};
 use fk_geometry::{Geometry, GpuGeometry, GroupElement};
@@ -17,6 +17,7 @@ use crate::elsewhere::{MAX_OTHER_EYES, SeenBy, ShowsElsewhere, ShowsOther};
 use crate::gpu::matrix_columns;
 use crate::mesh::{MeshInstances, Meshes, Vertex};
 use crate::normal_map::NormalMaps;
+use crate::parting::{Parting, SeeThrough};
 use crate::quotient::{QuotientView, Unrepeated};
 use crate::renderer::{FrameBindings, FrameView, GeometryRenderer, Hidden, OnLayer, RendererSetup};
 use crate::{Gpu, RenderStats};
@@ -53,23 +54,56 @@ struct Candidate<G: Geometry> {
     window: Option<usize>,
     /// Which eye draws it, if only one does.
     seen_by: Option<SeenBy>,
+    /// Cut away in the [`Parting`]'s cones: [`SeeThrough`], while the parting cuts.
+    see_through: bool,
 }
+
+/// Which pipelines draw a bin's instances, and of what mesh: the slot, whether they are seen
+/// through, the mesh.
+type BinKey = (u32, bool, u32);
 
 /// Instances of one mesh drawn through one slot's pipelines.
 struct Draw {
     slot: u32,
+    /// Through the slot's [`SeeThrough`] pipelines.
+    see_through: bool,
     mesh: u32,
     instances: Range<u32>,
 }
 
 /// The pipelines of one deform: the painted surfaces, the same cut off at the view's clip
 /// plane (for the other eye's image) and the shadow casters, by their far sides or by both
-/// ([`Shadows::two_sided`](crate::Shadows::two_sided)).
+/// ([`Shadows::two_sided`](crate::Shadows::two_sided)); and the surfaces to be seen through,
+/// built the first time an entity marked [`SeeThrough`] is there to draw through this deform.
 struct Pipelines {
+    shader: wgpu::ShaderModule,
+    label: String,
     opaque: wgpu::RenderPipeline,
     clipped: wgpu::RenderPipeline,
     shadow: wgpu::RenderPipeline,
     shadow_both: wgpu::RenderPipeline,
+    see_through: Option<SeeThroughPipelines>,
+}
+
+/// The painted pipelines of a deform for the surfaces to be seen through: cut away in the
+/// [`Parting`]'s cones, and the same cut off at the view's clip plane as well.
+struct SeeThroughPipelines {
+    opaque: wgpu::RenderPipeline,
+    clipped: wgpu::RenderPipeline,
+}
+
+impl Pipelines {
+    /// The painted pipeline, cut off at the clip plane or not, seen through or not (drawn
+    /// whole while the see-through ones are not built).
+    fn painted(&self, clipped: bool, see_through: bool) -> &wgpu::RenderPipeline {
+        let seen = self.see_through.as_ref().filter(|_| see_through);
+        match (seen, clipped) {
+            (Some(seen), false) => &seen.opaque,
+            (Some(seen), true) => &seen.clipped,
+            (None, false) => &self.opaque,
+            (None, true) => &self.clipped,
+        }
+    }
 }
 
 /// The normal maps as the shader samples them: a texture array, the flat map first.
@@ -243,7 +277,11 @@ type Drawables<G> = (
     Option<&'static ShowsOther>,
     Has<Unrepeated>,
     Option<&'static SeenBy>,
+    Has<SeeThrough>,
 );
+
+/// The deforms of the entities to be seen through.
+type SeeThroughQuery = QueryState<Option<&'static Deform>, (With<SeeThrough>, Without<Hidden>)>;
 
 /// Draws every [`MeshInstances`] with classic rasterization and the geometry's projection.
 ///
@@ -259,6 +297,11 @@ type Drawables<G> = (
 /// Entities marked [`ShowsElsewhere`] (or [`ShowsOther`]) are drawn after the rest, by a
 /// pipeline of their own, as windows onto the [`Elsewhere`](crate::Elsewhere) view (or one of
 /// the [`OtherEyes`](crate::OtherEyes)).
+///
+/// Entities marked [`SeeThrough`] are drawn, while the [`Parting`] cuts, by pipelines of their
+/// own that discard their fragments within its cones (in the other eye's image, cut off at its
+/// clip as well), built the first time one is there to draw through its deform. They cast their
+/// shadows whole.
 pub struct RasterPipeline<G: GpuGeometry> {
     builder: Builder,
     normal_maps: GpuNormalMaps,
@@ -268,12 +311,13 @@ pub struct RasterPipeline<G: GpuGeometry> {
     pipelines: Vec<Option<Pipelines>>,
     meshes: Vec<GpuMesh>,
     query: Option<QueryState<Drawables<G>, Without<Hidden>>>,
+    see_through_query: Option<SeeThroughQuery>,
     candidates: Vec<Candidate<G>>,
-    bins: BTreeMap<(u32, u32), Vec<GpuInstance>>,
-    shadow_bins: BTreeMap<(u32, u32), Vec<GpuInstance>>,
-    layer_bins: BTreeMap<(u32, u32), Vec<GpuInstance>>,
+    bins: BTreeMap<BinKey, Vec<GpuInstance>>,
+    shadow_bins: BTreeMap<BinKey, Vec<GpuInstance>>,
+    layer_bins: BTreeMap<BinKey, Vec<GpuInstance>>,
     /// By eye, as [`Candidate::window`] numbers them.
-    window_bins: [BTreeMap<(u32, u32), Vec<GpuInstance>>; 1 + MAX_OTHER_EYES],
+    window_bins: [BTreeMap<BinKey, Vec<GpuInstance>>; 1 + MAX_OTHER_EYES],
     instances: Option<wgpu::Buffer>,
     draws: Vec<Draw>,
     shadow_draws: Vec<Draw>,
@@ -339,6 +383,7 @@ impl<G: GpuGeometry> RasterPipeline<G> {
             pipelines: vec![Some(engine)],
             meshes: Vec::new(),
             query: None,
+            see_through_query: None,
             candidates: Vec::new(),
             bins: BTreeMap::new(),
             shadow_bins: BTreeMap::new(),
@@ -395,14 +440,53 @@ impl<G: GpuGeometry> RasterPipeline<G> {
         }
     }
 
+    /// The slot an entity with `deform` is drawn through: its deform's, or the engine's when
+    /// that did not compile.
+    fn slot_of(&self, deform: Option<&Deform>) -> u32 {
+        let slot = deform.map_or(0, |deform| deform.0.0 + 1);
+        match self.pipelines.get(slot as usize) {
+            Some(Some(_)) => slot,
+            _ => 0,
+        }
+    }
+
+    /// Builds the see-through pipelines of every deform an entity marked [`SeeThrough`] is
+    /// drawn through and that has none yet.
+    fn compile_see_through(&mut self, world: &mut World) {
+        let query = self
+            .see_through_query
+            .get_or_insert_with(|| world.query_filtered());
+        let mut deforms: Vec<Option<Deform>> = Vec::new();
+        for deform in query.iter(world) {
+            if !deforms.contains(&deform.copied()) {
+                deforms.push(deform.copied());
+            }
+        }
+        for deform in deforms {
+            let slot = self.slot_of(deform.as_ref());
+            let Some(Some(pipelines)) = self.pipelines.get_mut(slot as usize) else {
+                continue;
+            };
+            if pipelines.see_through.is_none() {
+                let started = Instant::now();
+                pipelines.see_through = Some(self.builder.build_see_through(pipelines));
+                let label = &pipelines.label;
+                tracing::info!(
+                    "{label} seen through, compiled in {:.0?}",
+                    started.elapsed()
+                );
+            }
+        }
+    }
+
     /// The draws of `bins`, appended to `all`.
     fn collect(
-        bins: &mut BTreeMap<(u32, u32), Vec<GpuInstance>>,
+        bins: &mut BTreeMap<BinKey, Vec<GpuInstance>>,
         all: &mut Vec<GpuInstance>,
         draws: &mut Vec<Draw>,
     ) {
         draws.clear();
-        for (&(slot, mesh), bin) in bins.iter_mut() {
+        for (&(slot, see_through, mesh), bin) in bins.iter_mut() {
             if bin.is_empty() {
                 continue;
             }
@@ -410,30 +494,33 @@ impl<G: GpuGeometry> RasterPipeline<G> {
             all.append(bin);
             draws.push(Draw {
                 slot,
+                see_through,
                 mesh,
                 instances: start..all.len() as u32,
             });
         }
     }
 
+    /// Records `draws`, `bind` setting the pipeline and its bind groups for each slot and
+    /// whether its instances are seen through.
     fn draw(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         draws: &[Draw],
-        bind: impl Fn(&mut wgpu::RenderPass<'_>, &Pipelines),
+        bind: impl Fn(&mut wgpu::RenderPass<'_>, &Pipelines, bool),
     ) {
         let Some(instances) = &self.instances else {
             return;
         };
-        let mut slot = None;
+        let mut bound = None;
         for draw in draws {
-            if slot != Some(draw.slot) {
+            if bound != Some((draw.slot, draw.see_through)) {
                 let Some(Some(pipelines)) = self.pipelines.get(draw.slot as usize) else {
                     continue;
                 };
-                bind(pass, pipelines);
+                bind(pass, pipelines, draw.see_through);
                 pass.set_vertex_buffer(1, instances.slice(..));
-                slot = Some(draw.slot);
+                bound = Some((draw.slot, draw.see_through));
             }
             let mesh = &self.meshes[draw.mesh as usize];
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
@@ -517,6 +604,64 @@ impl Builder {
             })
     }
 
+    /// A painted pipeline of `shader`, its fragment stage `fragment`.
+    fn painted(
+        &self,
+        label: &str,
+        shader: &wgpu::ShaderModule,
+        fragment: &str,
+    ) -> wgpu::RenderPipeline {
+        let vertex_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Uint8x4];
+        let instance_attributes = wgpu::vertex_attr_array![
+            2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
+            6 => Float32x4, 7 => Float32x4,
+        ];
+        let buffers = vertex_layouts(&vertex_attributes, &instance_attributes);
+        self.device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&self.opaque_layout),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some("vertex"),
+                    compilation_options: Default::default(),
+                    buffers: &buffers,
+                },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: self.depth_format,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Greater),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: self.sample_count,
+                    ..Default::default()
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some(fragment),
+                    compilation_options: Default::default(),
+                    targets: &[Some(self.color_format.into())],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+    }
+
+    /// The see-through pipelines of the deform `pipelines` were built for.
+    fn build_see_through(&self, pipelines: &Pipelines) -> SeeThroughPipelines {
+        let label = format!("{} seen through", pipelines.label);
+        SeeThroughPipelines {
+            opaque: self.painted(&label, &pipelines.shader, "see_through_fragment"),
+            clipped: self.painted(&label, &pipelines.shader, "clipped_see_through_fragment"),
+        }
+    }
+
     fn build(&self, label: &str, module: fk_shaders::naga::Module) -> Pipelines {
         let shader = self
             .device
@@ -530,44 +675,8 @@ impl Builder {
             6 => Float32x4, 7 => Float32x4,
         ];
         let buffers = vertex_layouts(&vertex_attributes, &instance_attributes);
-        let painted = |fragment: &str| {
-            self.device
-                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some(label),
-                    layout: Some(&self.opaque_layout),
-                    vertex: wgpu::VertexState {
-                        module: &shader,
-                        entry_point: Some("vertex"),
-                        compilation_options: Default::default(),
-                        buffers: &buffers,
-                    },
-                    primitive: wgpu::PrimitiveState {
-                        cull_mode: Some(wgpu::Face::Back),
-                        ..Default::default()
-                    },
-                    depth_stencil: Some(wgpu::DepthStencilState {
-                        format: self.depth_format,
-                        depth_write_enabled: Some(true),
-                        depth_compare: Some(wgpu::CompareFunction::Greater),
-                        stencil: Default::default(),
-                        bias: Default::default(),
-                    }),
-                    multisample: wgpu::MultisampleState {
-                        count: self.sample_count,
-                        ..Default::default()
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: &shader,
-                        entry_point: Some(fragment),
-                        compilation_options: Default::default(),
-                        targets: &[Some(self.color_format.into())],
-                    }),
-                    multiview_mask: None,
-                    cache: None,
-                })
-        };
-        let opaque = painted("fragment");
-        let clipped = painted("clipped_fragment");
+        let opaque = self.painted(label, &shader, "fragment");
+        let clipped = self.painted(label, &shader, "clipped_fragment");
         let shadow = |cull_mode| {
             self.device
                 .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -601,6 +710,8 @@ impl Builder {
                 })
         };
         Pipelines {
+            shader: shader.clone(),
+            label: label.to_owned(),
             opaque,
             clipped,
             // The sides turned away from the light cast: the lit sides never shadow
@@ -608,6 +719,7 @@ impl Builder {
             shadow: shadow(Some(wgpu::Face::Front)),
             // Every side: where solids meet, the nearer side shades the corner.
             shadow_both: shadow(None),
+            see_through: None,
         }
     }
 }
@@ -630,6 +742,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                 tracing::info!("{new} deforms compiled in {:.0?}", started.elapsed());
             }
         }
+        self.compile_see_through(world);
         if let Some(maps) = world.get_resource::<NormalMaps>() {
             let started = Instant::now();
             if self.normal_maps.update(gpu, maps) {
@@ -654,10 +767,27 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                     .collect()
             })
             .unwrap_or_default();
+        let cuts = world.get_resource::<Parting>().is_some_and(Parting::cuts);
+        // Which slots can draw instances seen through.
+        let seen_through: Vec<bool> = self
+            .pipelines
+            .iter()
+            .map(|pipelines| pipelines.as_ref().is_some_and(|p| p.see_through.is_some()))
+            .collect();
         let query = self.query.get_or_insert_with(|| world.query_filtered());
         self.candidates.clear();
-        for (relative, drawable, deform, casts_none, layer, shows, other, unrepeated, seen_by) in
-            query.iter(world)
+        for (
+            relative,
+            drawable,
+            deform,
+            casts_none,
+            layer,
+            shows,
+            other,
+            unrepeated,
+            seen_by,
+            see_through,
+        ) in query.iter(world)
         {
             let window = if shows {
                 Some(0)
@@ -672,6 +802,11 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                 Some(Some(_)) => slot,
                 _ => 0,
             };
+            // Seen through while the parting cuts, its pipelines built; whole otherwise.
+            let see_through = see_through
+                && cuts
+                && window.is_none()
+                && seen_through.get(slot as usize).copied().unwrap_or(false);
             let copies = if unrepeated || window.is_some() {
                 &[][..]
             } else {
@@ -690,6 +825,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                         layer,
                         window,
                         seen_by: seen_by.copied(),
+                        see_through,
                     });
                 }
             }
@@ -755,11 +891,13 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                 data: candidate.data,
             };
             instance.color[3] = instance.color[3].max(1.0);
-            let key = (candidate.slot, candidate.mesh);
+            let key = (candidate.slot, candidate.see_through, candidate.mesh);
+            // The shadows are cast whole, alongside the rest's.
+            let cast_key = (candidate.slot, false, candidate.mesh);
             if let Some(eye) = candidate.window {
                 if seen {
                     self.window_bins[eye]
-                        .entry((0, candidate.mesh))
+                        .entry((0, false, candidate.mesh))
                         .or_default()
                         .push(instance);
                 }
@@ -780,7 +918,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                 }
             }
             if casts {
-                self.shadow_bins.entry(key).or_default().push(instance);
+                self.shadow_bins.entry(cast_key).or_default().push(instance);
             }
         }
         let mut all = Vec::with_capacity(self.candidates.len());
@@ -815,7 +953,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
     }
 
     fn render_shadows(&self, pass: &mut wgpu::RenderPass<'_>, frame: &wgpu::BindGroup) {
-        self.draw(pass, &self.shadow_draws, |pass, pipelines| {
+        self.draw(pass, &self.shadow_draws, |pass, pipelines, _| {
             pass.set_pipeline(if self.two_sided {
                 &pipelines.shadow_both
             } else {
@@ -826,12 +964,8 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
     }
 
     fn render(&self, pass: &mut wgpu::RenderPass<'_>, bindings: &FrameBindings<'_>) {
-        self.draw(pass, &self.draws, |pass, pipelines| {
-            pass.set_pipeline(if self.clipped {
-                &pipelines.clipped
-            } else {
-                &pipelines.opaque
-            });
+        self.draw(pass, &self.draws, |pass, pipelines, see_through| {
+            pass.set_pipeline(pipelines.painted(self.clipped, see_through));
             pass.set_bind_group(0, bindings.frame, &[]);
             pass.set_bind_group(1, bindings.shadows, &[]);
             pass.set_bind_group(2, &self.normal_maps.bind_group, &[]);
@@ -839,7 +973,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
         let images = std::iter::once(bindings.elsewhere).chain(bindings.others);
         for (draws, image) in self.window_draws.iter().zip(images) {
             let Some(image) = image else { continue };
-            self.draw(pass, draws, |pass, _| {
+            self.draw(pass, draws, |pass, _, _| {
                 pass.set_pipeline(&self.window);
                 pass.set_bind_group(0, bindings.frame, &[]);
                 pass.set_bind_group(1, bindings.shadows, &[]);
@@ -849,8 +983,8 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
     }
 
     fn render_layer(&self, pass: &mut wgpu::RenderPass<'_>, bindings: &FrameBindings<'_>) {
-        self.draw(pass, &self.layer_draws, |pass, pipelines| {
-            pass.set_pipeline(&pipelines.opaque);
+        self.draw(pass, &self.layer_draws, |pass, pipelines, see_through| {
+            pass.set_pipeline(pipelines.painted(false, see_through));
             pass.set_bind_group(0, bindings.frame, &[]);
             pass.set_bind_group(1, bindings.shadows, &[]);
             pass.set_bind_group(2, &self.normal_maps.bind_group, &[]);
@@ -873,6 +1007,7 @@ mod tests {
     use crate::elsewhere::ElsewhereShared;
     use crate::graph::{FrameBuffers, frame_blocks, frame_layout};
     use crate::march::read_buffer;
+    use crate::parting::Part;
     use crate::shadow::{SHADOW_FORMAT, ShadowMap};
     use crate::{Color, Frustum, Lighting, MeshBuilder, NormalMaps, PointLight, Spot, shapes};
 
@@ -1190,6 +1325,55 @@ mod tests {
         );
         assert!(spread(&ridged) > 40, "the ridges show: {}", spread(&ridged));
         assert!(spread(&off) <= 2, "maps off, it is flat: {}", spread(&off));
+    }
+
+    /// Headless: a wall marked to be seen through is cut away in the parting's cone ahead, the
+    /// sky showing there, and whole outside it; a wall not marked, or nearer than the cone's
+    /// near distance, or with no parting, is whole.
+    #[test]
+    fn a_wall_seen_through_is_cut_away_in_the_parting() {
+        let Some(gpu) = Gpu::headless() else {
+            eprintln!("no adapter, skipped");
+            return;
+        };
+        let cone = Part {
+            direction: -Vector3::z(),
+            angle: 0.2,
+            ragged: 0.0,
+            cell: 1.0,
+            near: 1.0,
+        };
+        let wall = |marked: bool, parting: Parting| {
+            let mut world = World::new();
+            let mut meshes = Meshes::default();
+            let wall = meshes.add(shapes::cuboid(Vector3::new(6.0, 6.0, 0.05)).build::<E3>());
+            world.insert_resource(meshes);
+            world.insert_resource(parting);
+            let ahead = Isometry::exp(&E3::transvection(&Vector3::new(0.0, 0.0, -4.0)));
+            let entity = world
+                .spawn((
+                    ViewRelative::<E3>(ahead),
+                    MeshInstances::<E3>::single(wall, Color::WHITE),
+                ))
+                .id();
+            if marked {
+                world.entity_mut(entity).insert(SeeThrough);
+            }
+            let eye = world
+                .spawn(GlobalPose::<E3>::new(Isometry::identity()))
+                .id();
+            draw(&gpu, &mut world, eye, &Lighting::default(), None)
+        };
+        let (cx, cy) = (SIZE.0 / 2, SIZE.1 / 2);
+        let cut = wall(true, Parting(vec![cone]));
+        assert_eq!(pixel(&cut, cx, cy)[3], 0, "the sky in the cone");
+        assert_eq!(pixel(&cut, cx + 20, cy)[3], 255, "the wall outside it");
+        let plain = wall(false, Parting(vec![cone]));
+        assert_eq!(pixel(&plain, cx, cy)[3], 255, "a wall not marked is whole");
+        let near = wall(true, Parting(vec![Part { near: 5.0, ..cone }]));
+        assert_eq!(pixel(&near, cx, cy)[3], 255, "nearer than its near, whole");
+        let none = wall(true, Parting::default());
+        assert_eq!(none, plain, "no parting, exactly as without");
     }
 
     /// Headless: a point light a metre before a wall the sun is behind lights it, most where it
