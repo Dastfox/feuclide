@@ -3,6 +3,7 @@
 use bevy_ecs::component::Component;
 use bevy_ecs::resource::Resource;
 use fk_geometry::Geometry;
+use fk_math::Real;
 
 use crate::{Gpu, Lighting};
 
@@ -41,6 +42,14 @@ pub struct Elsewhere<G: Geometry> {
     /// whole image, as a [framed](crate::MeshBuilder::framed) screen needs. Any other window
     /// onto it shows nothing beyond that part.
     pub window: Option<[G::Point; 4]>,
+    /// Whether it casts shadows: its own shadow map, drawn again from where it stands, before
+    /// its image (`true`, the default). `false` lights what it sees unshadowed and spares the
+    /// pass: a window seen small, a night whose shadows cannot be told.
+    pub shadows: bool,
+    /// How far it sees, in place of the frame's camera's far: what is beyond is neither drawn
+    /// nor culled for. `None` (the default) for the frame's. A fog that has swallowed everything
+    /// past a distance needs nothing drawn past it.
+    pub far: Option<Real>,
 }
 
 impl<G: Geometry> Default for Elsewhere<G> {
@@ -51,6 +60,8 @@ impl<G: Geometry> Default for Elsewhere<G> {
             lighting: None,
             clip: None,
             window: None,
+            shadows: true,
+            far: None,
         }
     }
 }
@@ -63,6 +74,8 @@ impl<G: Geometry> Clone for Elsewhere<G> {
             lighting: self.lighting.clone(),
             clip: self.clip,
             window: self.window,
+            shadows: self.shadows,
+            far: self.far,
         }
     }
 }
@@ -75,6 +88,8 @@ impl<G: Geometry> std::fmt::Debug for Elsewhere<G> {
             .field("lighting", &self.lighting)
             .field("clip", &self.clip)
             .field("window", &self.window)
+            .field("shadows", &self.shadows)
+            .field("far", &self.far)
             .finish()
     }
 }
@@ -97,11 +112,15 @@ pub struct OtherEye<G: Geometry> {
     /// The corners of the one window it is seen through, as [`Elsewhere::window`]; `None` for
     /// the whole image.
     pub window: Option<[G::Point; 4]>,
+    /// Whether it casts shadows, as [`Elsewhere::shadows`].
+    pub shadows: bool,
+    /// How far it sees, as [`Elsewhere::far`]; `None` for the frame's camera's.
+    pub far: Option<Real>,
 }
 
 impl<G: Geometry> OtherEye<G> {
     /// An eye at `eye`, the right way up, under the frame's light, cut off nowhere, its whole
-    /// image drawn.
+    /// image drawn, its shadows cast, seeing as far as the frame's camera.
     pub fn at(eye: G::Isometry) -> Self {
         Self {
             eye,
@@ -109,6 +128,8 @@ impl<G: Geometry> OtherEye<G> {
             lighting: None,
             clip: None,
             window: None,
+            shadows: true,
+            far: None,
         }
     }
 }
@@ -121,6 +142,8 @@ impl<G: Geometry> Clone for OtherEye<G> {
             lighting: self.lighting.clone(),
             clip: self.clip,
             window: self.window,
+            shadows: self.shadows,
+            far: self.far,
         }
     }
 }
@@ -133,6 +156,8 @@ impl<G: Geometry> std::fmt::Debug for OtherEye<G> {
             .field("lighting", &self.lighting)
             .field("clip", &self.clip)
             .field("window", &self.window)
+            .field("shadows", &self.shadows)
+            .field("far", &self.far)
             .finish()
     }
 }

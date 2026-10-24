@@ -659,6 +659,8 @@ impl<G: GpuGeometry> RenderState<G> {
                     lighting: None,
                     clip: other.clip,
                     window: other.window,
+                    shadows: other.shadows,
+                    far: other.far,
                 };
                 self.draw_elsewhere(world, view, &eye, None, seen_by, &shadows, size)
             }
@@ -1067,8 +1069,9 @@ impl<G: GpuGeometry> RenderState<G> {
     /// Draws the scene seen from `other` (cut off at its clip, shown upside down if it is
     /// flipped, only what is seen through its window) into its image and submits it: the
     /// [`Elsewhere`] eye's for `which` `None`, else eye `which` of the [`OtherEyes`] (its image
-    /// made the first time). The frame's camera and shadows from there under `lighting` (its
-    /// own or the frame's), its poses made relative to that eye. Whether it was drawn.
+    /// made the first time). The frame's camera (its far the eye's own, if it has one) and
+    /// shadows from there (none if the eye casts none) under `lighting` (its own or the
+    /// frame's), its poses made relative to that eye. Whether it was drawn.
     #[allow(clippy::too_many_arguments)]
     fn draw_elsewhere(
         &mut self,
@@ -1088,6 +1091,8 @@ impl<G: GpuGeometry> RenderState<G> {
             flip,
             clip,
             window,
+            shadows: casts,
+            far: sees,
             ..
         } = *other;
         let aspect = Real::from(size.width) / Real::from(size.height);
@@ -1114,9 +1119,11 @@ impl<G: GpuGeometry> RenderState<G> {
         }
         let mut seen = view.clone();
         seen.eye.isometry = eye;
+        if let Some(far) = sees {
+            seen.camera.far = far.max(seen.camera.near * 2.0);
+        }
         let shift = eye.inverse().compose(&view.eye.isometry);
-        let shadow = shadows
-            .enabled
+        let shadow = (shadows.enabled && casts)
             .then(|| ShadowView::new::<G>(&eye, &lighting.sun, shadows))
             .flatten();
         if shadow.is_some() {
