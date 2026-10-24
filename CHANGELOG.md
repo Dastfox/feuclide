@@ -19,6 +19,8 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
   is, each into an image of its own, shown by `ShowsOther(k)` surfaces: several portals at once.
 - fk-render: an `Elsewhere` or `OtherEye` may cast no shadows (`shadows`, sparing its shadow
   pass) and see a far of its own (`far`, nothing drawn or culled for past it).
+- fk-flat: `Kit::chunked` cuts a built kit into square chunks of the ground by its triangles'
+  middles, each keeping its surfaces, parts and shades, to be culled chunk by chunk.
 
 ## 2026-10-14
 

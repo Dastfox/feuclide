@@ -198,6 +198,55 @@ impl<M: Copy> Kit<M> {
         }
     }
 
+    /// The kit cut into square chunks of the ground `cell` metres across (by x and z), each
+    /// triangle in the chunk its middle lies in: one kit a chunk, in the chunks' order, each
+    /// vertex copied into every chunk a triangle of it lies in with its surface, its part, its
+    /// shade, its texture coordinates and its map, the kit's own material and bareness kept.
+    /// A long stretch of scenery built as one is then culled chunk by chunk, as what is built
+    /// into [`Chunks`] is; an empty kit gives no chunk.
+    pub fn chunked(&self, cell: Real) -> Vec<Self> {
+        let cell = cell.max(1.0);
+        let m = &self.mesh;
+        let positions = m.positions();
+        let maps: Vec<Option<NormalMap>> = m.maps().collect();
+        let mut chunks: BTreeMap<(i64, i64), (Self, HashMap<u32, u32>)> = BTreeMap::new();
+        for t in m.indices().as_chunks::<3>().0 {
+            let middle = t
+                .iter()
+                .fold(Vector3::zeros(), |sum, &i| sum + positions[i as usize])
+                / 3.0;
+            let key = (
+                (middle.x / cell).floor() as i64,
+                (middle.z / cell).floor() as i64,
+            );
+            let (chunk, renumbered) = chunks.entry(key).or_insert_with(|| {
+                let empty = Self {
+                    mesh: MeshBuilder::new(),
+                    surfaces: Vec::new(),
+                    parts: Vec::new(),
+                    surface: self.surface,
+                    bare: self.bare,
+                };
+                (empty, HashMap::new())
+            });
+            let [a, b, c] = t.map(|i| {
+                *renumbered.entry(i).or_insert_with(|| {
+                    let v = i as usize;
+                    let j =
+                        chunk
+                            .mesh
+                            .vertex_mapped(positions[v], m.normals()[v], m.uvs()[v], maps[v]);
+                    chunk.mesh.shade(j, m.shades()[v]);
+                    chunk.surfaces.push(self.surfaces[v]);
+                    chunk.parts.push(self.parts[v]);
+                    j
+                })
+            });
+            chunk.mesh.triangle(a, b, c);
+        }
+        chunks.into_values().map(|(chunk, _)| chunk).collect()
+    }
+
     /// The merged mesh with its materials laid: each vertex's map (`map_of` its material: the
     /// map and how many units one tile of it spans, or none), and texture coordinates projected
     /// along the axis its triangle faces most ([`box_uv`]), in tiles of its material. The
@@ -527,6 +576,30 @@ mod tests {
         assert_eq!(kit.mesh().shades()[1], [1.0; 3]);
         let moved = kit.moved(|p, n| [p + Vector3::z(), *n]);
         assert_eq!(moved.mesh().shades(), kit.mesh().shades());
+    }
+
+    #[test]
+    fn chunks_keep_every_triangle_with_its_surface_part_and_shade() {
+        let mut part = shapes::cuboid(Vector3::new(0.5, 0.5, 0.5));
+        part.shade(0, [0.5, 0.6, 0.7]);
+        let mut kit = Kit::<u8>::default().laid(7);
+        kit.add(&part, &translation(Vector3::new(1.0, 0.0, 1.0)));
+        kit.add_as(&part, &translation(Vector3::new(31.0, 0.0, 1.0)), 1);
+        kit.add_as(&part, &translation(Vector3::new(1.0, 0.0, -29.0)), 2);
+        let chunks = kit.chunked(10.0);
+        assert_eq!(chunks.len(), 3);
+        let triangles: usize = chunks.iter().map(|c| c.mesh().indices().len() / 3).sum();
+        assert_eq!(triangles, kit.mesh().indices().len() / 3);
+        let n = part.positions().len();
+        // In the chunks' order: z −29 first, then x 1 and x 31 at z 1.
+        assert_eq!(chunks[0].wears(0), Some(2));
+        assert_eq!(chunks[1].wears(0), Some(7));
+        assert_eq!(chunks[1].mesh().shades()[0], [0.5, 0.6, 0.7]);
+        assert_eq!(chunks[1].parts()[0], 0);
+        assert_eq!(chunks[2].wears(0), Some(1));
+        assert_eq!(chunks[2].parts()[0], 1);
+        assert_eq!(chunks[2].mesh().positions().len(), n);
+        assert!(Kit::<u8>::default().chunked(10.0).is_empty());
         // Laid, each vertex keeps its shade, however its corners are split.
         let mut maps = fk_render::NormalMaps::new(4);
         let map = maps.add(vec![[128, 128, 255, 255]; 16]);
