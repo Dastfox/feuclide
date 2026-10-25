@@ -795,10 +795,14 @@ impl<G: GpuGeometry> RenderState<G> {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("fk") });
 
         self.timer.start(&mut encoder);
-        if view.is_some() {
-            self.shadow_and_offscreen(&mut encoder, shadow.is_some());
+        if view.is_some() && shadow.is_some() {
+            self.shadow_pass(&mut encoder);
         }
         self.timer.mark(&mut encoder, "shadows");
+        if view.is_some() {
+            self.offscreen_passes(&mut encoder);
+        }
+        self.timer.mark(&mut encoder, "offscreen");
 
         // Opaque. Alpha 0 is the sky: nothing drawn there.
         let clear = wgpu::Color {
@@ -1032,29 +1036,30 @@ impl<G: GpuGeometry> RenderState<G> {
 }
 
 impl<G: GpuGeometry> RenderState<G> {
-    /// Records the shadow pass, when `shadows`, and the renderers' offscreen passes, for the
-    /// view their last `queue` was given.
-    fn shadow_and_offscreen(&self, encoder: &mut wgpu::CommandEncoder, shadows: bool) {
-        // Shadows: depth from the light, 1 where nothing casts.
-        if shadows {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("fk shadow"),
-                color_attachments: &[],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.shadow_map.view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
+    /// Records the shadow pass for the view the renderers' last `queue` was given: depth from
+    /// the light, 1 where nothing casts.
+    fn shadow_pass(&self, encoder: &mut wgpu::CommandEncoder) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("fk shadow"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.shadow_map.view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
                 }),
-                ..Default::default()
-            });
-            for renderer in &self.renderers {
-                renderer.render_shadows(&mut pass, &self.frame.bind_group);
-            }
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        for renderer in &self.renderers {
+            renderer.render_shadows(&mut pass, &self.frame.bind_group);
         }
-        // Offscreen passes of the renderers.
+    }
+
+    /// Records the renderers' offscreen passes (the ray marcher's half-resolution and ahead
+    /// marches among them) for the view their last `queue` was given.
+    fn offscreen_passes(&self, encoder: &mut wgpu::CommandEncoder) {
         let bindings = FrameBindings {
             frame: &self.frame.bind_group,
             shadows: &self.shadow_map.bind_group,
@@ -1167,7 +1172,10 @@ impl<G: GpuGeometry> RenderState<G> {
                 label: Some("fk elsewhere"),
             });
         self.timer.start(&mut encoder);
-        self.shadow_and_offscreen(&mut encoder, shadow.is_some());
+        if shadow.is_some() {
+            self.shadow_pass(&mut encoder);
+        }
+        self.offscreen_passes(&mut encoder);
         let Some(targets) = &self.targets else {
             return false;
         };
@@ -1216,7 +1224,11 @@ impl<G: GpuGeometry> RenderState<G> {
                 renderer.render(&mut pass, &bindings);
             }
         }
-        self.timer.mark(&mut encoder, "elsewhere");
+        // Each eye timed on its own: the `Elsewhere` eye under `elsewhere`, the others under
+        // `eye 1` to `eye 3`.
+        const OTHER_EYE_PASSES: [&str; MAX_OTHER_EYES] = ["eye 1", "eye 2", "eye 3"];
+        let pass = which.map_or("elsewhere", |k| OTHER_EYE_PASSES[k]);
+        self.timer.mark(&mut encoder, pass);
         self.gpu.queue.submit([encoder.finish()]);
         true
     }

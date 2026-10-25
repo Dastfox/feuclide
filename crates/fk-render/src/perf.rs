@@ -39,12 +39,16 @@ pub(crate) fn enabled() -> bool {
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PerfHold(pub bool);
 
-/// The names of the renderer's own GPU passes, in the order it runs them (see [`GpuTimings`]);
-/// the caller's [`ImageEffect`](crate::ImageEffect)s run between `settle` and `post`, under
-/// their own labels.
-pub const GPU_PASSES: [&str; 7] = [
+/// The names of the renderer's own GPU passes, in the order it runs them (see [`GpuTimings`]):
+/// `elsewhere` is the [`Elsewhere`](crate::Elsewhere) eye's (the [`OtherEyes`](crate::OtherEyes)
+/// are `eye 1` to `eye 3`, each a whole drawing of the scene), `shadows` the shadow map,
+/// `offscreen` the renderers' offscreen passes (the ray marcher's half-resolution and ahead
+/// marches); the caller's [`ImageEffect`](crate::ImageEffect)s run between `settle` and `post`,
+/// under their own labels.
+pub const GPU_PASSES: [&str; 8] = [
     "elsewhere",
     "shadows",
+    "offscreen",
     "opaque",
     "layer",
     "settle",

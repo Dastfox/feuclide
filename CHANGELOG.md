@@ -21,6 +21,9 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
   pass) and see a far of its own (`far`, nothing drawn or culled for past it).
 - fk-flat: `Kit::chunked` cuts a built kit into square chunks of the ground by its triangles'
   middles, each keeping its surfaces, parts and shades, to be culled chunk by chunk.
+- fk-render: honest GPU timers: an `offscreen` mark between the shadow pass and the renderers'
+  offscreen passes (`GPU_PASSES` eight long), and each extra eye timed on its own (`elsewhere`,
+  `eye 1` to `eye 3`).
 
 ## 2026-10-14
 
