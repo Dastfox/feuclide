@@ -12,6 +12,9 @@ behind one renderer and share one depth buffer.
 It is built on `bevy_ecs`, `wgpu` and `winit`, but it is not a Bevy plugin: it uses no Bevy
 transform or render crates, since `Mat4` and `GlobalTransform` are exactly what it avoids.
 
+> **AI disclaimer:** AI tools were used to split Feuclide and its code out of an experimental
+> game I'm making.
+
 ## Showcase:
 
 ### h3
