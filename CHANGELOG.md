@@ -9,6 +9,8 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 
 ## Unreleased
 
+- fk-render: the layer render (`LayerRender`) is cleared to its clear colour's alpha, no longer
+  always opaque, so that a reader may lay what is drawn on it over something else by the alpha.
 - fk-physics: `move_through` finds the way out of a surface once a step rather than twice.
 - fk-render: `RayMarched::late`, a scene drawn after the image effects, over the image as they
   left it, against the opaque depth (resolved to one sample when multisampled).

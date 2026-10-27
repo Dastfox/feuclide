@@ -863,13 +863,11 @@ impl<G: GpuGeometry> RenderState<G> {
             );
         }
 
-        // The layer, only while it is enabled: what is marked on it, over a flat colour.
+        // The layer, only while it is enabled: what is marked on it, over a flat colour, its
+        // alpha the clear colour's where nothing is drawn.
         if view.is_some() && layer_render.enabled {
             let layer = &targets.layer;
-            let clear = wgpu::Color {
-                a: 1.0,
-                ..layer_render.clear.into()
-            };
+            let clear: wgpu::Color = layer_render.clear.into();
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("fk layer"),
                 color_attachments: &[Some(color_attachment(

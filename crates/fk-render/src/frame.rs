@@ -264,7 +264,9 @@ pub enum PostMode {
 pub struct LayerRender {
     /// Whether it is drawn this frame. Off by default, and then it costs nothing.
     pub enabled: bool,
-    /// What is behind the layer's entities.
+    /// What is behind the layer's entities, its alpha the image's alpha there: opaque (the
+    /// default, white) for a flat colour; 0 lets whoever reads the layer lay what is drawn on it
+    /// over something else, by the alpha.
     pub clear: Color,
 }
 
