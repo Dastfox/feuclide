@@ -24,7 +24,13 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 - fk-render: honest GPU timers: an `offscreen` mark between the shadow pass and the renderers'
   offscreen passes (`GPU_PASSES` eight long), and each extra eye timed on its own (`elsewhere`,
   `eye 1` to `eye 3`).
+
+## 2026-10-27
+
+feuclide 0.2.1
+
 - README: a disclaimer that AI tools were used to split Feuclide out of an experimental game.
+- feuclide: 0.2.1, released for its crates.io page to carry the README's disclaimer.
 
 ## 2026-10-14
 
