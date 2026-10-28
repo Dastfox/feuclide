@@ -16,6 +16,15 @@ struct View {
     // A linear form on embedded points in the eye's frame: the clipped raster pipelines drop
     // what it takes below 0 (the other eye's cut, `fk_render::Elsewhere::clip`). Zero for none.
     clip: vec4<f32>,
+    // The view of the portals' tree this is (`fk_render::PortalViews`, read through
+    // `fk::portal`): x how many of `portal_forms` its region takes, from the first (the cone's
+    // sides through the eye, then the plane of the mouth it is seen through, each positive
+    // inside), y how many regions are cut out of it.
+    portal: vec4<f32>,
+    // Each cut: x its first form in `portal_forms`, y how many (its sides, then its plane).
+    portal_cuts: array<vec4<f32>, 8>,
+    // Linear forms on embedded points in the eye's frame.
+    portal_forms: array<vec4<f32>, 96>,
 }
 
 // Opaque to the engine: `time` is seconds since start, `values` mean whatever the game says.

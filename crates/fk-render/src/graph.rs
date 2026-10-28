@@ -10,7 +10,7 @@ use fk_app::{Time, WindowHandle, WindowSize};
 use fk_geometry::{GpuGeometry, GroupElement};
 use fk_math::Real;
 use fk_math::nalgebra::{Matrix4, Rotation3, Unit, Vector3};
-use fk_scene::ActiveView;
+use fk_scene::{ActiveView, Realm};
 
 use crate::carried::CarriedImage;
 use crate::effect::{
@@ -29,6 +29,7 @@ use crate::light::{MAX_POINT_LIGHTS, PointLight, Spot};
 use crate::mesh::tangent;
 use crate::overlay::{Overlay, OverlayPass};
 use crate::parting::Parting;
+use crate::portal::{self, PortalBudget, PortalView, PortalViews, RealmLighting};
 use crate::post::PostPass;
 use crate::renderer::{FrameBindings, FrameView, GeometryRenderer, RendererFactory, RendererSetup};
 use crate::screenshot::{self, Screenshots};
@@ -639,10 +640,20 @@ impl<G: GpuGeometry> RenderState<G> {
         self.timer.begin();
         let aspect = Real::from(size.width) / Real::from(size.height);
         let view = world.get_resource::<ActiveView<G>>().cloned();
-        let lighting = world
+        // The frame's light, and the realms' own: the frame's own view is lit as its realm is.
+        let frame_lighting = world
             .get_resource::<Lighting>()
             .cloned()
             .unwrap_or_default();
+        let realm_lighting = world
+            .get_resource::<RealmLighting>()
+            .cloned()
+            .unwrap_or_default();
+        let lit = |realm: Option<Realm>| match realm {
+            Some(realm) => realm_lighting.of(realm, &frame_lighting).clone(),
+            None => frame_lighting.clone(),
+        };
+        let lighting = lit(view.as_ref().map(|view| view.realm));
         let shadows = world.get_resource::<Shadows>().copied().unwrap_or_default();
         // The other eye's image first, submitted on its own: the frame's buffers are written
         // again for the frame's own eye after it.
@@ -652,7 +663,10 @@ impl<G: GpuGeometry> RenderState<G> {
             .unwrap_or_default();
         let elsewhere_drawn = match (&view, other.eye) {
             (Some(view), Some(eye)) => {
-                let seen_by = other.lighting.as_ref().unwrap_or(&lighting);
+                let seen_by = other
+                    .lighting
+                    .clone()
+                    .unwrap_or_else(|| lit(Some(other.realm.unwrap_or(view.realm))));
                 let eye = OtherEye {
                     eye,
                     flip: other.flip,
@@ -661,8 +675,9 @@ impl<G: GpuGeometry> RenderState<G> {
                     window: other.window,
                     shadows: other.shadows,
                     far: other.far,
+                    realm: other.realm,
                 };
-                self.draw_elsewhere(world, view, &eye, None, seen_by, &shadows, size)
+                self.draw_elsewhere(world, view, &eye, None, &seen_by, &shadows, size)
             }
             _ => false,
         };
@@ -675,9 +690,12 @@ impl<G: GpuGeometry> RenderState<G> {
         if let Some(view) = &view {
             for (k, other) in more.0.iter().enumerate() {
                 let Some(other) = other else { continue };
-                let seen_by = other.lighting.as_ref().unwrap_or(&lighting);
+                let seen_by = other
+                    .lighting
+                    .clone()
+                    .unwrap_or_else(|| lit(Some(other.realm.unwrap_or(view.realm))));
                 others_drawn[k] =
-                    self.draw_elsewhere(world, view, other, Some(k), seen_by, &shadows, size);
+                    self.draw_elsewhere(world, view, other, Some(k), &seen_by, &shadows, size);
             }
         }
         let shadow = view
@@ -702,6 +720,49 @@ impl<G: GpuGeometry> RenderState<G> {
         self.last_eye = view.as_ref().map(|view| view.eye.isometry);
         // The point of their pixels this frame's rays and vertices go through.
         let jitter = self.settle.prepare(&self.gpu, &post.settle, &motion);
+        // The views seen through portals, each drawn in place into the frame's image in a
+        // submit of its own, every view before the one it is seen through; the frame's own,
+        // cut where they are, last.
+        let tree = match &view {
+            Some(view) => {
+                let openings = portal::openings::<G>(world);
+                let budget = world
+                    .get_resource::<PortalBudget>()
+                    .copied()
+                    .unwrap_or_default();
+                let lens = portal::Lens {
+                    fov_y: view.camera.fov_y,
+                    far: view.camera.far,
+                    size: [size.width, size.height],
+                };
+                if openings.is_empty() {
+                    Vec::new()
+                } else {
+                    portal::portal_views(&view.eye.isometry, view.realm, lens, &openings, &budget)
+                }
+            }
+            None => Vec::new(),
+        };
+        let mut portals_drawn = false;
+        if let Some(view) = &view {
+            for (k, seen) in tree.iter().enumerate().skip(1).rev() {
+                let lighting = lit(Some(seen.realm));
+                let drawn = self.draw_portal_view(
+                    world,
+                    view,
+                    seen,
+                    k,
+                    !portals_drawn,
+                    jitter,
+                    &lighting,
+                    &shadows,
+                    size,
+                );
+                portals_drawn |= drawn;
+            }
+        }
+        let own = tree.first().cloned();
+        world.insert_resource(PortalViews(tree));
         let mut blocks = frame_blocks(
             world,
             view.as_ref(),
@@ -711,6 +772,13 @@ impl<G: GpuGeometry> RenderState<G> {
             size,
         );
         blocks.view.jitter = Vec2f(jitter);
+        if let Some(own) = &own {
+            (
+                blocks.view.portal,
+                blocks.view.portal_cuts,
+                blocks.view.portal_forms,
+            ) = own.block();
+        }
         self.frame.write(&self.gpu.queue, &blocks);
         self.post.prepare(
             &self.gpu,
@@ -752,7 +820,9 @@ impl<G: GpuGeometry> RenderState<G> {
                 frustum: Frustum::new(view.camera.fov_y, aspect, view.camera.far),
                 shadow,
                 elsewhere: None,
-                clipped: false,
+                portal: None,
+                realm: view.realm,
+                clipped: own.as_ref().is_some_and(PortalView::clips),
             };
             for renderer in &mut self.renderers {
                 renderer.prepare(&self.gpu, world, &frame_view);
@@ -804,7 +874,8 @@ impl<G: GpuGeometry> RenderState<G> {
         }
         self.timer.mark(&mut encoder, "offscreen");
 
-        // Opaque. Alpha 0 is the sky: nothing drawn there.
+        // Opaque. Alpha 0 is the sky: nothing drawn there. Over the views seen through portals,
+        // when they were drawn.
         let clear = wgpu::Color {
             a: 0.0,
             ..lighting.sky.horizon.into()
@@ -812,16 +883,20 @@ impl<G: GpuGeometry> RenderState<G> {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("fk opaque"),
-                color_attachments: &[Some(color_attachment(
-                    targets.multisampled.as_ref(),
-                    &targets.color_view,
-                    clear,
-                ))],
+                color_attachments: &[Some(if portals_drawn {
+                    kept_color_attachment(targets.multisampled.as_ref(), &targets.color_view, None)
+                } else {
+                    color_attachment(targets.multisampled.as_ref(), &targets.color_view, clear)
+                })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &targets.depth,
                     // Reverse-Z: 0 is the far surface.
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0.0),
+                        load: if portals_drawn {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(0.0)
+                        },
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
@@ -1122,6 +1197,7 @@ impl<G: GpuGeometry> RenderState<G> {
         }
         let mut seen = view.clone();
         seen.eye.isometry = eye;
+        seen.realm = other.realm.unwrap_or(view.realm);
         if let Some(far) = sees {
             seen.camera.far = far.max(seen.camera.near * 2.0);
         }
@@ -1155,6 +1231,8 @@ impl<G: GpuGeometry> RenderState<G> {
             },
             shadow,
             elsewhere: Some(shift),
+            portal: None,
+            realm: seen.realm,
             clipped: clip.is_some(),
         };
         for renderer in &mut self.renderers {
@@ -1227,6 +1305,154 @@ impl<G: GpuGeometry> RenderState<G> {
         const OTHER_EYE_PASSES: [&str; MAX_OTHER_EYES] = ["eye 1", "eye 2", "eye 3"];
         let pass = which.map_or("elsewhere", |k| OTHER_EYE_PASSES[k]);
         self.timer.mark(&mut encoder, pass);
+        self.gpu.queue.submit([encoder.finish()]);
+        true
+    }
+
+    /// Draws `seen`, view `k` of the portals' tree, in place into the frame's image and depth
+    /// (clearing them first when `first`), cut to its region and its part of the image, and
+    /// submits it: its eye's poses made relative to it, its own nearest lights and its shadows
+    /// from there (none if its portal casts none) under `lighting`, its rays and vertices
+    /// through the frame's `jitter`. Whether it was drawn.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_portal_view(
+        &mut self,
+        world: &mut World,
+        view: &ActiveView<G>,
+        seen: &PortalView<G>,
+        k: usize,
+        first: bool,
+        jitter: [f32; 2],
+        lighting: &Lighting,
+        shadows: &Shadows,
+        size: WindowSize,
+    ) -> bool {
+        // Each view timed on its own, `portal 1` on; the views past the names together.
+        const PORTAL_PASSES: [&str; 16] = [
+            "portal 1",
+            "portal 2",
+            "portal 3",
+            "portal 4",
+            "portal 5",
+            "portal 6",
+            "portal 7",
+            "portal 8",
+            "portal 9",
+            "portal 10",
+            "portal 11",
+            "portal 12",
+            "portal 13",
+            "portal 14",
+            "portal 15",
+            "portals",
+        ];
+        if self.targets.is_none() {
+            return false;
+        }
+        let aspect = Real::from(size.width) / Real::from(size.height);
+        let mut eye = view.clone();
+        eye.eye.isometry = seen.eye;
+        eye.realm = seen.realm;
+        if let Some(far) = seen.far {
+            eye.camera.far = far.max(eye.camera.near * 2.0);
+        }
+        let shift = seen.eye.inverse().compose(&view.eye.isometry);
+        let shadow = (shadows.enabled && seen.shadows)
+            .then(|| ShadowView::new::<G>(&seen.eye, &lighting.sun, shadows))
+            .flatten();
+        if shadow.is_some() {
+            self.shadow_map.resize(&self.gpu, shadows.size);
+        }
+        let mut blocks = frame_blocks(
+            world,
+            Some(&eye),
+            lighting,
+            shadow.as_ref(),
+            self.shadow_map.size,
+            size,
+        );
+        blocks.view.jitter = Vec2f(jitter);
+        (
+            blocks.view.portal,
+            blocks.view.portal_cuts,
+            blocks.view.portal_forms,
+        ) = seen.block();
+        self.frame.write(&self.gpu.queue, &blocks);
+        let (fov_y, far) = (eye.camera.fov_y, eye.camera.far);
+        let frame_view = FrameView {
+            view: &eye,
+            aspect,
+            size: [size.width, size.height],
+            frustum: Frustum::part(fov_y, aspect, far, seen.part),
+            shadow,
+            elsewhere: None,
+            portal: Some(shift),
+            realm: seen.realm,
+            clipped: true,
+        };
+        for renderer in &mut self.renderers {
+            renderer.prepare(&self.gpu, world, &frame_view);
+        }
+        for renderer in &mut self.renderers {
+            renderer.queue(&self.gpu, &frame_view);
+        }
+        let mut encoder = self
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("fk portal"),
+            });
+        self.timer.start(&mut encoder);
+        if shadow.is_some() {
+            self.shadow_pass(&mut encoder);
+        }
+        self.offscreen_passes(&mut encoder);
+        let Some(targets) = &self.targets else {
+            return false;
+        };
+        let clear = first.then_some(wgpu::Color {
+            a: 0.0,
+            ..lighting.sky.horizon.into()
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("fk portal"),
+                color_attachments: &[Some(kept_color_attachment(
+                    targets.multisampled.as_ref(),
+                    &targets.color_view,
+                    clear,
+                ))],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &targets.depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: if first {
+                            wgpu::LoadOp::Clear(0.0)
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            let [x, y, width, height] = scissor(seen.part, [size.width, size.height]);
+            pass.set_scissor_rect(x, y, width, height);
+            self.sky.render(&mut pass, &self.frame.bind_group);
+            let bindings = FrameBindings {
+                frame: &self.frame.bind_group,
+                shadows: &self.shadow_map.bind_group,
+                elsewhere: None,
+                others: [None; MAX_OTHER_EYES],
+            };
+            for renderer in &self.renderers {
+                renderer.render(&mut pass, &bindings);
+            }
+        }
+        self.timer.mark(
+            &mut encoder,
+            PORTAL_PASSES[(k - 1).min(PORTAL_PASSES.len() - 1)],
+        );
         self.gpu.queue.submit([encoder.finish()]);
         true
     }
@@ -1314,6 +1540,34 @@ fn others_bindings<'a>(
     })
 }
 
+/// A colour attachment cleared to `clear`, or loaded as it is for `None`, kept for a pass after
+/// it to load: drawn into `samples` and resolved into `resolved` when multisampling (the samples
+/// stored too), straight into `resolved` otherwise.
+fn kept_color_attachment<'a>(
+    samples: Option<&'a wgpu::TextureView>,
+    resolved: &'a wgpu::TextureView,
+    clear: Option<wgpu::Color>,
+) -> wgpu::RenderPassColorAttachment<'a> {
+    let ops = wgpu::Operations {
+        load: clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
+        store: wgpu::StoreOp::Store,
+    };
+    match samples {
+        Some(samples) => wgpu::RenderPassColorAttachment {
+            view: samples,
+            depth_slice: None,
+            resolve_target: Some(resolved),
+            ops,
+        },
+        None => wgpu::RenderPassColorAttachment {
+            view: resolved,
+            depth_slice: None,
+            resolve_target: None,
+            ops,
+        },
+    }
+}
+
 /// A colour attachment cleared to `clear`: drawn into `samples` and resolved into `resolved`
 /// when multisampling (the samples are only needed until they are resolved), straight into
 /// `resolved` otherwise.
@@ -1385,6 +1639,9 @@ pub(crate) fn frame_blocks<G: GpuGeometry>(
         size: Vec2f([width, height]),
         jitter: Vec2f([0.0; 2]),
         clip: Vec4f([0.0; 4]),
+        portal: Vec4f([0.0; 4]),
+        portal_cuts: [Vec4f([0.0; 4]); crate::portal::MAX_PORTAL_CUTS],
+        portal_forms: [Vec4f([0.0; 4]); crate::portal::MAX_PORTAL_FORMS],
     };
 
     let origin = G::origin();
@@ -1528,8 +1785,8 @@ fn in_eye_frame<G: GpuGeometry>(view: &ActiveView<G>, direction: &Vector3<Real>)
     Vector3::from_fn(|i, _| G::inner(&origin, &at_eye, &G::origin_frame(i)))
 }
 
-/// The point lights that reach nearest the eye, made relative to it in f64 (`eye⁻¹ ∘ light`),
-/// and how many there are.
+/// The point lights of the eye's realm that reach nearest the eye, made relative to it in f64
+/// (`eye⁻¹ ∘ light`), and how many there are.
 fn point_lights<G: GpuGeometry>(
     world: &World,
     view: Option<&ActiveView<G>>,
@@ -1546,6 +1803,12 @@ fn point_lights<G: GpuGeometry>(
     let mut lights: Vec<_> = query
         .iter(world)
         .filter(|(_, _, light)| light.range > 0.0 && light.intensity > 0.0)
+        .filter(|(entity, ..)| {
+            world
+                .get::<fk_scene::GlobalRealm>(*entity)
+                .map_or(fk_scene::Realm::MAIN, |realm| realm.0)
+                == view.realm
+        })
         .map(|(entity, pose, light)| {
             let relative = to_eye.compose(&pose.isometry);
             let at = G::apply(&relative, &origin);
@@ -1668,6 +1931,7 @@ mod tests {
             entity,
             camera: Camera::<E3>::new(1.0, 0.1, 100.0),
             eye: GlobalPose::new(eye),
+            realm: fk_scene::Realm::MAIN,
         };
         let size = WindowSize {
             width: 64,

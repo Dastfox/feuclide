@@ -13,12 +13,17 @@
 //!   computed in `f64` so that only small numbers reach the GPU.
 //! - [`FloatingOrigin`], when inserted, moves the whole scene back to the eye whenever it has
 //!   gone too far from the origin, so that the coordinates stay small (open H³ worlds).
+//! - [`Realm`] puts an entity and everything under it in a parallel world of its own, at its own
+//!   origin ([`Realms`] hands them out); [`Portal`]s join them, and [`Portals::cross`] says when
+//!   a body moving through one comes out in another.
 
 mod camera;
 mod chart;
 mod origin;
+mod portal;
 mod pose;
 mod propagate;
+mod realm;
 
 use std::marker::PhantomData;
 
@@ -29,8 +34,10 @@ use fk_geometry::Geometry;
 pub use camera::{ActiveView, Camera, ViewRelative, update_view_relative};
 pub use chart::{ChartTag, Letter};
 pub use origin::{FloatingOrigin, rebase};
+pub use portal::{Crossing, Mouth, Portal, Portals, cross, form_through, plane_form};
 pub use pose::{GlobalPose, Pose, Velocity, integrate_velocities};
 pub use propagate::propagate_poses;
+pub use realm::{GlobalRealm, Realm, Realms};
 
 /// The scene's systems, by what they do.
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -40,7 +47,7 @@ pub enum SceneSystems {
     /// Moves the roots back to the eye when a [`FloatingOrigin`] says so, in [`PostUpdate`]
     /// before [`Propagate`](Self::Propagate).
     Rebase,
-    /// Writes [`GlobalPose`]s, in [`PostUpdate`].
+    /// Writes [`GlobalPose`]s and [`GlobalRealm`]s, in [`PostUpdate`].
     Propagate,
     /// Finds the [`ActiveView`] and writes [`ViewRelative`] poses, in [`PostUpdate`] after
     /// [`Propagate`](Self::Propagate).
@@ -61,6 +68,7 @@ impl<G> Default for ScenePlugin<G> {
 impl<G: Geometry> Plugin for ScenePlugin<G> {
     fn build(&self, app: &mut App) {
         app.set_geometry::<G>()
+            .init_resource::<Realms>()
             .add_systems(
                 FixedUpdate,
                 integrate_velocities::<G>.in_set(SceneSystems::Integrate),

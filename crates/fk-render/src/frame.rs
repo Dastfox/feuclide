@@ -497,6 +497,12 @@ pub(crate) struct ViewBlock {
     /// A linear form on embedded points in the eye's frame: the clipped raster pipelines drop
     /// what it takes below 0 ([`Elsewhere::clip`](crate::Elsewhere::clip)). Zero for none.
     pub clip: Vec4f,
+    /// The view's region of the portals' tree (`fk::portal`): x the region's forms, y the cuts.
+    pub portal: Vec4f,
+    /// Each cut's first form and how many.
+    pub portal_cuts: [Vec4f; crate::portal::MAX_PORTAL_CUTS],
+    /// The region's forms, then the cuts'.
+    pub portal_forms: [Vec4f; crate::portal::MAX_PORTAL_FORMS],
 }
 
 #[derive(ShaderType)]

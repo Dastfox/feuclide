@@ -43,5 +43,9 @@ path = "seifert-weber/main.rs"
 name = "lens-space"
 path = "lens-space/main.rs"
 
+[[example]]
+name = "portals"
+path = "portals/main.rs"
+
 [lints]
 workspace = true

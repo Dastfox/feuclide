@@ -4,7 +4,7 @@ use bevy_ecs::component::Component;
 use bevy_ecs::world::World;
 use fk_geometry::{GpuGeometry, GroupElement};
 use fk_math::Real;
-use fk_scene::ActiveView;
+use fk_scene::{ActiveView, Realm};
 
 use crate::{Frustum, Gpu, ShadowView};
 
@@ -64,18 +64,35 @@ pub struct FrameView<'a, G: GpuGeometry> {
     /// composed with it first, and windows onto it ([`ShowsElsewhere`](crate::ShowsElsewhere))
     /// are not drawn. [`view`](Self::view) is then the other eye's.
     pub elsewhere: Option<G::Isometry>,
-    /// Whether the raster path drops what lies behind the view's clip plane
-    /// ([`Elsewhere::clip`](crate::Elsewhere::clip)), drawing through its clipped pipelines.
+    /// Set when this is a view seen through portals ([`PortalViews`](crate::PortalViews)),
+    /// drawn in place into the frame's image before the frame's own view: its eye relative to
+    /// the active camera's, inverted. Poses relative to the active camera are composed with it
+    /// first, as with [`elsewhere`](Self::elsewhere); but windows and what is
+    /// [`SeenBy::Eye`](crate::SeenBy) are drawn as by the frame's own eye. [`view`](Self::view)
+    /// is then the view's eye.
+    pub portal: Option<G::Isometry>,
+    /// The realm drawn: nothing of another is drawn, lit, shadowed or marched.
+    pub realm: Realm,
+    /// Whether the raster path drops what the view does not keep: what lies behind its clip
+    /// plane ([`Elsewhere::clip`](crate::Elsewhere::clip)), out of its region of the portals'
+    /// tree or in a region cut from it, drawing through its clipped pipelines.
     pub clipped: bool,
 }
 
 impl<G: GpuGeometry> FrameView<'_, G> {
     /// A pose relative to the active camera's eye, made relative to this view's eye.
     pub fn relative(&self, to_camera: &G::Isometry) -> G::Isometry {
-        match &self.elsewhere {
+        match self.elsewhere.as_ref().or(self.portal.as_ref()) {
             Some(shift) => shift.compose(to_camera),
             None => *to_camera,
         }
+    }
+
+    /// Whether this is the frame's own view: neither another eye's image nor a view through
+    /// portals. Only it draws what is drawn late, and carries what it marched from frame to
+    /// frame.
+    pub fn is_frame_eye(&self) -> bool {
+        self.elsewhere.is_none() && self.portal.is_none()
     }
 }
 

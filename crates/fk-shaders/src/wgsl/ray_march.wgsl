@@ -32,6 +32,7 @@
     geo_distance, geo_bisector_distance, geo_project,
 }
 #import fk::sky::sky_haze
+#import fk::portal::portal_span
 #import fk::paint::{banded, point_lights}
 #import fk::march::{march, march_cone}
 #import fk::sdf::{sdf_distance, sdf_color}
@@ -285,23 +286,30 @@ fn heat(own: f32) -> vec3<f32> {
 }
 
 // The ray along `dir`, from `start`: how far along it may start (its block's cone) and the
-// steps that took, counted in its effort; no farther than `limit`, where it is hidden.
+// steps that took, counted in its effort; no farther than `limit`, where it is hidden; only
+// along its stretch of the view's region of the portals' tree (`fk::portal`).
 fn trace(dir: vec3<f32>, start: vec2<f32>, limit: f32) -> Hit {
-    let far = min(view.far, limit);
+    let span = portal_span(dir, view.near, view.far);
+    let far = min(min(view.far, limit), span.y);
     let budget = max(u32(march.settings.y), 1u);
     let longest = select(BIG, march.shading.w, march.shading.w > 0.0);
 #ifdef SAMPLED_METRIC
     var omega = 1.0;
-    let first = view.near;
+    let first = max(view.near, span.x);
 #else
     var omega = max(march.settings.z, 1.0);
-    let first = max(view.near, start.x);
+    let first = max(max(view.near, start.x), span.x);
 #endif
     // Started by its cone, a ray steps plainly once it is within a few pixels of the field:
     // an over-relaxed step from near the surface can jump past a near miss that the steps
     // from the eye would have closed in on; farther off, it is relaxed as from the eye.
     let coned = start.x > 0.0;
     var ray = Ray(dir, first, dir * first, dir);
+    // Nothing of it in the view's region.
+    if first >= far {
+        let block = max(march.paint.z * march.paint.z, 1.0);
+        return Hit(ray, start.y / f32(budget), false, start.y / block / f32(budget));
+    }
     deck = IDENTITY;
     var best = ray;
     var best_deck = deck;
@@ -538,6 +546,10 @@ fn carried(pixel: vec2<f32>) -> Half {
 fn fragment_carry(@builtin(position) frag: vec4<f32>) -> Half {
     var last = carried(frag.xy);
     last.color.a = unmarked(last.color.a);
+    // Carried into a part of the image the view no longer draws there (a mouth came over it).
+    if last.color.a > 0.5 && !in_span(pixel_to_ndc(frag.xy), last.distance) {
+        return Half(vec4<f32>(0.0), 0.0);
+    }
     if march.interleave.w > 0.5 {
         last.color.a += CARRIED;
     }
@@ -690,6 +702,13 @@ fn refine(@builtin(global_invocation_id) id: vec3<u32>) {
     textureStore(refined_distance_out, texel, vec4<f32>(d, 0.0, 0.0, 0.0));
 }
 
+// Whether a surface found `d` along the pixel's ray at `ndc` is in its stretch of the view's
+// region: what the composite brings up from the pixels round it may not be.
+fn in_span(ndc: vec2<f32>, d: f32) -> bool {
+    let span = portal_span(pixel_dir(ndc), view.near, view.far);
+    return d >= span.x && d <= span.y;
+}
+
 @fragment
 fn composite(@builtin(position) frag: vec4<f32>) -> Surface {
     let k = march.shading.z;
@@ -706,6 +725,9 @@ fn composite(@builtin(position) frag: vec4<f32>) -> Surface {
     }
     let here = between(frag.xy);
     if here.kind == 1u {
+        if !in_span(ndc, here.distance) {
+            discard;
+        }
         return Surface(here.colour, geo_distance_to_depth(here.distance, ndc));
     }
     if here.kind == 2u {

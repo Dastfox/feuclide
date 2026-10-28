@@ -4,6 +4,7 @@ use bevy_ecs::component::Component;
 use bevy_ecs::resource::Resource;
 use fk_geometry::Geometry;
 use fk_math::Real;
+use fk_scene::Realm;
 
 use crate::{Gpu, Lighting};
 
@@ -50,6 +51,8 @@ pub struct Elsewhere<G: Geometry> {
     /// nor culled for. `None` (the default) for the frame's. A fog that has swallowed everything
     /// past a distance needs nothing drawn past it.
     pub far: Option<Real>,
+    /// The realm it sees, `None` (the default) for the frame eye's.
+    pub realm: Option<Realm>,
 }
 
 impl<G: Geometry> Default for Elsewhere<G> {
@@ -62,6 +65,7 @@ impl<G: Geometry> Default for Elsewhere<G> {
             window: None,
             shadows: true,
             far: None,
+            realm: None,
         }
     }
 }
@@ -76,6 +80,7 @@ impl<G: Geometry> Clone for Elsewhere<G> {
             window: self.window,
             shadows: self.shadows,
             far: self.far,
+            realm: self.realm,
         }
     }
 }
@@ -90,6 +95,7 @@ impl<G: Geometry> std::fmt::Debug for Elsewhere<G> {
             .field("window", &self.window)
             .field("shadows", &self.shadows)
             .field("far", &self.far)
+            .field("realm", &self.realm)
             .finish()
     }
 }
@@ -116,11 +122,14 @@ pub struct OtherEye<G: Geometry> {
     pub shadows: bool,
     /// How far it sees, as [`Elsewhere::far`]; `None` for the frame's camera's.
     pub far: Option<Real>,
+    /// The realm it sees, `None` for the frame eye's.
+    pub realm: Option<Realm>,
 }
 
 impl<G: Geometry> OtherEye<G> {
     /// An eye at `eye`, the right way up, under the frame's light, cut off nowhere, its whole
-    /// image drawn, its shadows cast, seeing as far as the frame's camera.
+    /// image drawn, its shadows cast, seeing as far as the frame's camera, in the frame eye's
+    /// realm.
     pub fn at(eye: G::Isometry) -> Self {
         Self {
             eye,
@@ -130,6 +139,7 @@ impl<G: Geometry> OtherEye<G> {
             window: None,
             shadows: true,
             far: None,
+            realm: None,
         }
     }
 }
@@ -144,6 +154,7 @@ impl<G: Geometry> Clone for OtherEye<G> {
             window: self.window,
             shadows: self.shadows,
             far: self.far,
+            realm: self.realm,
         }
     }
 }
@@ -158,6 +169,7 @@ impl<G: Geometry> std::fmt::Debug for OtherEye<G> {
             .field("window", &self.window)
             .field("shadows", &self.shadows)
             .field("far", &self.far)
+            .field("realm", &self.realm)
             .finish()
     }
 }

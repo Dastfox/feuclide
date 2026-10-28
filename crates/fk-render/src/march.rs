@@ -13,7 +13,7 @@ use encase::ShaderType;
 use fk_geometry::{GpuGeometry, GroupElement, SampledMetric};
 use fk_math::Real;
 use fk_math::nalgebra::Vector3;
-use fk_scene::ViewRelative;
+use fk_scene::{GlobalRealm, Realm, ViewRelative};
 use fk_shaders::Shader;
 
 use crate::fields::{
@@ -620,6 +620,7 @@ type Marched<G> = (
     &'static RayMarched,
     Has<OnLayer>,
     Has<Unrepeated>,
+    Option<&'static GlobalRealm>,
 );
 
 /// Draws every [`RayMarched`] scene: a fullscreen pass per scene, after the raster pipeline,
@@ -655,8 +656,8 @@ pub struct RayMarchPipeline<G: GpuGeometry> {
     drawn: usize,
     /// The size of the image the last `prepare` was for, in pixels.
     size: [u32; 2],
-    /// Whether the last `prepare` was for the other eye's image, where every scene is drawn in
-    /// the opaque pass.
+    /// Whether the last `prepare` was for another view than the frame's own (another eye's
+    /// image, a view through portals), where every scene is drawn in the opaque pass.
     elsewhere: bool,
     /// Frames prepared, for which tile of four an interleaved scene marches.
     frame: u32,
@@ -1102,8 +1103,9 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
             .is_some_and(|post| post.settle.frames > 1.0);
         let half_size = view.size.map(|n| n.div_ceil(2).max(1));
         // How the eye moved since the last frame, and which tile of four is marched.
-        // An other eye's image neither carries from nor moves on the frame's own history.
-        let elsewhere = view.elsewhere.is_some();
+        // An other eye's image, or a view through portals, neither carries from nor moves on
+        // the frame's own history.
+        let elsewhere = !view.is_frame_eye();
         let eye = view.view.eye.isometry;
         let carry = self
             .last_eye
@@ -1122,15 +1124,17 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RayMarchPipeline<G> {
 
         let fold = world
             .get_resource::<QuotientView<G>>()
+            .filter(|space| space.realm() == view.realm)
             .map(|space| Fold::new(space, &view.view.eye.isometry));
         let query = self.query.get_or_insert_with(|| world.query_filtered());
         // An interleaved scene carries its own last frame: it is left out of the other eyes'
         // images, which would draw over it.
         let scenes: Vec<_> = query
             .iter(world)
-            .filter(|(_, marched, _, _)| marched.scale > 0.0)
-            .filter(|(_, marched, _, _)| !(elsewhere && marched.interleave > 1))
-            .map(|(relative, marched, layer, unrepeated)| {
+            .filter(|(.., realm)| realm.map_or(Realm::MAIN, |realm| realm.0) == view.realm)
+            .filter(|(_, marched, ..)| marched.scale > 0.0)
+            .filter(|(_, marched, ..)| !(elsewhere && marched.interleave > 1))
+            .map(|(relative, marched, layer, unrepeated, _)| {
                 let fold = fold.filter(|_| !unrepeated).unwrap_or_default();
                 (view.relative(&relative.0), marched.clone(), layer, fold)
             })
@@ -1959,6 +1963,7 @@ fn sdf_color(q: vec3<f32>) -> vec3<f32> {
             entity,
             camera: Camera::<E3>::new(fov, 0.1, 100.0),
             eye: GlobalPose::new(Isometry::identity()),
+            realm: fk_scene::Realm::MAIN,
         };
         let view = FrameView {
             view: &active,
@@ -1967,6 +1972,8 @@ fn sdf_color(q: vec3<f32>) -> vec3<f32> {
             frustum: Frustum::new(fov, aspect, 100.0),
             shadow: None,
             elsewhere: None,
+            portal: None,
+            realm: fk_scene::Realm::MAIN,
             clipped: false,
         };
         let size = WindowSize {

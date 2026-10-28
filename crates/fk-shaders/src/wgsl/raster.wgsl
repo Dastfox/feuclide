@@ -14,6 +14,7 @@
     geo_fog, geo_project_side, geo_seen_distance, geo_seen_direction,
 }
 #import fk::sky::sky_haze
+#import fk::portal::portal_keeps
 #import fk::paint::{banded, point_lights}
 #import fk::displace::Shaped
 #import fk::deform::deform
@@ -139,11 +140,12 @@ fn fragment(in: Varyings) -> @location(0) vec4<f32> {
     return paint(in);
 }
 
-// The same, cut off at the view's clip plane: what lies behind it is not drawn. A pipeline of
-// its own, so that the frame's own never discards.
+// The same, cut off at the view's clip plane and to its region of the portals' tree
+// (`fk::portal`): what it does not keep is not drawn. A pipeline of its own, so that a view
+// that keeps everything never discards.
 @fragment
 fn clipped_fragment(in: Varyings) -> @location(0) vec4<f32> {
-    if dot(view.clip, in.point) < 0.0 {
+    if !portal_keeps(in.point) {
         discard;
     }
     return paint(in);
@@ -160,11 +162,11 @@ fn see_through_fragment(in: Varyings) -> @location(0) vec4<f32> {
     return paint(in);
 }
 
-// Both: cut off at the view's clip plane and cut away in the parting's cones, for the surfaces
-// to be seen through in the other eye's image.
+// Both: cut off at the view's clip plane and to its region, and cut away in the parting's
+// cones, for the surfaces to be seen through in a clipped view.
 @fragment
 fn clipped_see_through_fragment(in: Varyings) -> @location(0) vec4<f32> {
-    if dot(view.clip, in.point) < 0.0 || parted(in) {
+    if !portal_keeps(in.point) || parted(in) {
         discard;
     }
     return paint(in);

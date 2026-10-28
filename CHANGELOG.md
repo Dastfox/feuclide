@@ -9,6 +9,21 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 
 ## Unreleased
 
+- fk-scene: realms, parallel worlds at their own origins (`Realm` on an entity and all under
+  it, `GlobalRealm` resolved with the poses, `Realms` naming them, `ActiveView::realm`), and
+  portals between them (`Portal`, its openings `Mouth`, `Portals::cross` and `cross` for a body
+  going through, `plane_form` and `form_through` for planes as linear forms on the embedding).
+- fk-render: portals within portals drawn in place (`PortalViews`, to `PortalBudget`'s depth,
+  4): each view in its own submit into the frame's image and depth, cut to an exact region of
+  linear forms (`fk::portal`: `portal_keeps`, `portal_sees`, `portal_span`), its realm's meshes,
+  fields and nearest lights only, lit by `RealmLighting`; the raster's clipped fragments, the
+  ray marcher's rays and composite, and the sky keep to the view's region. `FrameView` gains
+  `portal` and `realm`, `Elsewhere` and `OtherEye` a `realm`, `QuotientView` the realm it
+  repeats (`in_realm`).
+- fk-physics: `RealmColliders`, each realm's colliders, and `Character::through`, a character
+  carried through the portal it walked through.
+- examples: `portals`, a meadow, a room and an endless corridor at the same coordinates.
+
 - fk-render: the layer render (`LayerRender`) is cleared to its clear colour's alpha, no longer
   always opaque, so that a reader may lay what is drawn on it over something else by the alpha.
 - fk-physics: `move_through` finds the way out of a surface once a step rather than twice.

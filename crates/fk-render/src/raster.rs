@@ -9,7 +9,7 @@ use bevy_ecs::query::{Has, QueryState, With, Without};
 use bevy_ecs::world::World;
 use bytemuck::{Pod, Zeroable};
 use fk_geometry::{Geometry, GpuGeometry, GroupElement};
-use fk_scene::ViewRelative;
+use fk_scene::{GlobalRealm, Realm, ViewRelative};
 use wgpu::util::DeviceExt;
 
 use crate::deform::{CastsNoShadow, Deform, Deforms};
@@ -278,6 +278,7 @@ type Drawables<G> = (
     Has<Unrepeated>,
     Option<&'static SeenBy>,
     Has<SeeThrough>,
+    Option<&'static GlobalRealm>,
 );
 
 /// The deforms of the entities to be seen through.
@@ -758,6 +759,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
         let eye = view.view.eye.isometry;
         let shifts: Vec<G::Isometry> = world
             .get_resource::<QuotientView<G>>()
+            .filter(|space| space.realm() == view.realm)
             .map(|space| {
                 let to_eye = eye.inverse();
                 space
@@ -787,8 +789,13 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
             unrepeated,
             seen_by,
             see_through,
+            realm,
         ) in query.iter(world)
         {
+            // Another realm's: never drawn here.
+            if realm.map_or(Realm::MAIN, |realm| realm.0) != view.realm {
+                continue;
+            }
             let window = if shows {
                 Some(0)
             } else {
@@ -1081,6 +1088,7 @@ mod tests {
             entity: eye,
             camera: Camera::<E3>::new(fov, 0.1, 100.0),
             eye: GlobalPose::new(Isometry::identity()),
+            realm: fk_scene::Realm::MAIN,
         };
         let view = FrameView {
             view: &active,
@@ -1089,6 +1097,8 @@ mod tests {
             frustum: Frustum::new(fov, aspect, 100.0),
             shadow: None,
             elsewhere: None,
+            portal: None,
+            realm: fk_scene::Realm::MAIN,
             clipped: false,
         };
         let size = WindowSize {

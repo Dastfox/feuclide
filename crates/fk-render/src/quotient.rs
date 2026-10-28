@@ -7,7 +7,8 @@
 //! marcher carries each ray back across the faces of the domain as it crosses them (the
 //! product of the `γ_f⁻¹` crossed, applied to the points it evaluates the field at), so a field
 //! drawn once fills every copy of the domain. Entities marked [`Unrepeated`] are drawn once, as
-//! they are.
+//! they are. Only one realm is in the quotient ([`QuotientView::in_realm`], the main one by
+//! default): the others are drawn once, as they are.
 
 use bevy_ecs::component::Component;
 use bevy_ecs::resource::Resource;
@@ -17,6 +18,7 @@ use fk_geometry::{Geometry, GpuGeometry, GroupElement};
 use fk_math::Real;
 use fk_math::nalgebra::Vector4;
 use fk_quotient::Quotient;
+use fk_scene::Realm;
 
 /// Most faces the ray marcher carries rays across: six for a flat 3-torus, twelve for a
 /// dodecahedral domain (the Seifert–Weber space, the Poincaré sphere).
@@ -27,6 +29,7 @@ pub const MAX_FOLD_FACES: usize = 12;
 pub struct QuotientView<G: Geometry> {
     quotient: Quotient<G>,
     translates: Vec<G::Isometry>,
+    realm: Realm,
 }
 
 impl<G: GpuGeometry> QuotientView<G> {
@@ -98,11 +101,23 @@ impl<G: GpuGeometry> QuotientView<G> {
         Self {
             quotient,
             translates,
+            realm: Realm::MAIN,
         }
     }
 }
 
 impl<G: Geometry> QuotientView<G> {
+    /// The same, for the realm `realm` in place of the main one.
+    pub fn in_realm(mut self, realm: Realm) -> Self {
+        self.realm = realm;
+        self
+    }
+
+    /// The realm in the quotient; the others are not repeated.
+    pub fn realm(&self) -> Realm {
+        self.realm
+    }
+
     /// The quotient.
     pub fn quotient(&self) -> &Quotient<G> {
         &self.quotient

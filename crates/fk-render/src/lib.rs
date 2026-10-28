@@ -15,6 +15,16 @@
 //!    marked [`ShowsElsewhere`] show that image in the frame's opaque pass: a portal's
 //!    opening, a mirror. So for each of the [`OtherEyes`] that is set, its image shown by the
 //!    surfaces marked [`ShowsOther`] with its number: several portals at once.
+//!    **Portals.** Then the views seen through the [`Portal`](fk_scene::Portal)s from the eye
+//!    ([`PortalViews`]: portals within portals, to [`PortalBudget`]'s depth, 4 by default),
+//!    each drawn in place into the frame's own image and depth in a submit of its own (its
+//!    shadows, its opaque pass, its part of the image), cut to its region: a cone from its eye
+//!    through the mouths it is seen through, beyond the last, every one of its sides a linear
+//!    form on the embedded points, so the same few dot products in every geometry. Every view
+//!    drops what lies in the regions of the views seen from it, so each point a ray reaches is
+//!    drawn once, and the frame's own view, drawn last, is cut where they are. Each view sees
+//!    only its own [`Realm`](fk_scene::Realm): its meshes, its fields, its lights, lit by its
+//!    [`RealmLighting`]; the frame's own view sees its eye's.
 //! 1. **Visibility.** Every [`GeometryRenderer`] extracts what it draws and culls it. The
 //!    raster pipeline composes each instance camera-relative in `f64`
 //!    (`view⁻¹ ∘ entity ∘ instance`) and tests its mesh's geodesic bounding ball against the
@@ -80,6 +90,7 @@ pub mod offscreen;
 mod overlay;
 mod parting;
 pub mod perf;
+mod portal;
 mod post;
 pub mod quotient;
 mod raster;
@@ -127,6 +138,9 @@ pub use normal_map::{
 pub use offscreen::{Image, Offscreen, Paths};
 pub use overlay::Overlay;
 pub use parting::{MAX_PARTINGS, Part, Parting, SeeThrough};
+pub use portal::{
+    MAX_PORTAL_CUTS, MAX_PORTAL_FORMS, PortalBudget, PortalView, PortalViews, RealmLighting, Region,
+};
 pub use quotient::{QuotientView, Unrepeated};
 pub use raster::RasterPipeline;
 pub use renderer::{

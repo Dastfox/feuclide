@@ -154,6 +154,7 @@ impl<G: GpuGeometry> Offscreen<G> {
             entity: Entity::PLACEHOLDER,
             camera: camera.clone(),
             eye: GlobalPose::new(*eye),
+            realm: fk_scene::Realm::MAIN,
         };
         let view = FrameView {
             view: &active,
@@ -162,6 +163,8 @@ impl<G: GpuGeometry> Offscreen<G> {
             frustum: Frustum::new(camera.fov_y, aspect, camera.far),
             shadow: None,
             elsewhere: None,
+            portal: None,
+            realm: fk_scene::Realm::MAIN,
             clipped: false,
         };
         let size = WindowSize {

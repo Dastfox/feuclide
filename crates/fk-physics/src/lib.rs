@@ -26,6 +26,9 @@
 //!   momentum lives on the dual of the Lie algebra, integrated by a variational Lie-group
 //!   integrator ([`RigidBody`]) with the inertia operator of its mass distribution
 //!   ([`Inertia`]); resting contact against a [`DistanceField`].
+//! - **Parallel worlds** ([`realms`]): each [`Realm`](fk_scene::Realm) holds its own colliders
+//!   ([`RealmColliders`]), and a character goes from one into another through a
+//!   [`Portal`](fk_scene::Portal) ([`Character::through`]).
 
 pub mod bvh;
 pub mod character;
@@ -34,6 +37,7 @@ pub mod field;
 pub mod ghosts;
 pub mod grid;
 pub mod motion;
+pub mod realms;
 pub mod rigid;
 pub mod shapes;
 
@@ -44,6 +48,7 @@ pub use field::{DistanceField, FieldBody, cast, curvature, move_through, normal}
 pub use ghosts::{Ghost, GhostTree, ghosts};
 pub use grid::BucketGrid;
 pub use motion::{Gravity, advance, transport_frame};
+pub use realms::RealmColliders;
 pub use rigid::{Inertia, RigidBody};
 pub use shapes::{Ball, Capsule, Contact};
 

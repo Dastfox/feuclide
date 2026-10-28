@@ -20,6 +20,9 @@
 //!   encoding `geo_depth_to_distance` / `geo_distance_to_depth` shared by every render path;
 //!   also `geo_log_origin` / `geo_exp_origin` (the coordinates meshes are authored in) and
 //!   `geo_pixel_footprint`.
+//! - `fk::portal`: the region of the portals' tree the view draws (`portal_keeps` a surface's
+//!   point, `portal_sees` a direction all the way out, `portal_span` the stretch of a ray), read
+//!   from `View`'s portal forms. Imported by the raster, ray-march and sky skeletons.
 //!
 //! The raster skeleton also imports:
 //!
@@ -71,6 +74,7 @@ use naga_oil::compose::{
 };
 
 const VIEW: (&str, &str) = ("fk/view.wgsl", include_str!("wgsl/view.wgsl"));
+const PORTAL: (&str, &str) = ("fk/portal.wgsl", include_str!("wgsl/portal.wgsl"));
 const SKY: (&str, &str) = ("fk/sky.wgsl", include_str!("wgsl/sky.wgsl"));
 const DISPLACE: (&str, &str) = ("fk/displace.wgsl", include_str!("wgsl/displace.wgsl"));
 const SHADOW: (&str, &str) = ("fk/shadow.wgsl", include_str!("wgsl/shadow.wgsl"));
@@ -333,6 +337,7 @@ pub fn compose_module<'a>(
     let engine = [
         VIEW,
         (geometry_path, geometry_source),
+        PORTAL,
         hook(hooks.figure, FIGURE),
         SKY,
         DISPLACE,

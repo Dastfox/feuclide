@@ -8,9 +8,10 @@ use crate::ChartTag;
 ///
 /// An entity without a parent ([`ChildOf`]) is relative to the scene root. There is no scale: a
 /// pose is an element of the isometry group. Adding a `Pose` adds a [`GlobalPose`] and a
-/// [`ViewRelative`](crate::ViewRelative), both filled in every frame.
+/// [`ViewRelative`](crate::ViewRelative) and a [`GlobalRealm`](crate::GlobalRealm), all
+/// filled in every frame.
 #[derive(Component, Debug)]
-#[require(GlobalPose<G>, crate::ViewRelative<G>)]
+#[require(GlobalPose<G>, crate::ViewRelative<G>, crate::GlobalRealm)]
 pub struct Pose<G: Geometry>(pub G::Isometry);
 
 impl<G: Geometry> Pose<G> {

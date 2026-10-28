@@ -4,7 +4,7 @@ use bevy_ecs::prelude::*;
 use fk_geometry::{Geometry, GroupElement};
 use fk_math::Real;
 
-use crate::GlobalPose;
+use crate::{GlobalPose, GlobalRealm, Realm};
 
 /// A point of view: the entity's frame is the eye.
 ///
@@ -75,6 +75,8 @@ pub struct ActiveView<G: Geometry> {
     pub camera: Camera<G>,
     /// Its global pose.
     pub eye: GlobalPose<G>,
+    /// The realm it is in, and sees: the camera entity's [`GlobalRealm`].
+    pub realm: Realm,
 }
 
 impl<G: Geometry> Clone for ActiveView<G> {
@@ -83,6 +85,7 @@ impl<G: Geometry> Clone for ActiveView<G> {
             entity: self.entity,
             camera: self.camera.clone(),
             eye: self.eye.clone(),
+            realm: self.realm,
         }
     }
 }
@@ -110,13 +113,22 @@ impl<G: Geometry> Clone for ViewRelative<G> {
 
 impl<G: Geometry> Copy for ViewRelative<G> {}
 
+/// A camera, where it is and the realm it is in.
+type Eye<'a, G> = (
+    Entity,
+    &'a Camera<G>,
+    &'a GlobalPose<G>,
+    Option<&'a GlobalRealm>,
+);
+
 /// Finds the active camera and writes every entity's [`ViewRelative`] pose.
 pub fn update_view_relative<G: Geometry>(
     mut commands: Commands,
-    cameras: Query<(Entity, &Camera<G>, &GlobalPose<G>)>,
+    cameras: Query<Eye<G>>,
     mut relative: Query<(&GlobalPose<G>, &mut ViewRelative<G>)>,
 ) {
-    let Some((entity, camera, eye)) = cameras.iter().find(|(_, camera, _)| camera.active) else {
+    let Some((entity, camera, eye, realm)) = cameras.iter().find(|(_, camera, _, _)| camera.active)
+    else {
         commands.remove_resource::<ActiveView<G>>();
         return;
     };
@@ -125,6 +137,7 @@ pub fn update_view_relative<G: Geometry>(
         entity,
         camera: camera.clone(),
         eye: eye.clone(),
+        realm: realm.map_or(Realm::MAIN, |realm| realm.0),
     });
     for (global, mut relative) in &mut relative {
         relative.0 = view_inverse.compose(&global.isometry);
