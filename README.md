@@ -19,15 +19,19 @@ transform or render crates, since `Mat4` and `GlobalTransform` are exactly what 
 
 ### h3
 
-<img width="480" height="270" alt="fly-h3" src="https://github.com/user-attachments/assets/0fcde3a2-460e-449e-8723-69b73edbfbec" />
+<img width="480" height="270" alt="fly-h3" src="doc/media/fly-h3.gif" />
+
+### s3
+
+<img width="480" height="270" alt="fly-s3" src="doc/media/fly-s3.gif" />
 
 ### Lens space
 
-<img width="480" height="270" alt="lens-space" src="https://github.com/user-attachments/assets/f0d0fc9e-166e-43b7-ab5a-772f015f10f1" />
+<img width="480" height="270" alt="lens-space" src="doc/media/lens-space.gif" />
 
 ### seifert weber
 
-<img width="480" height="270" alt="seifert-weber" src="https://github.com/user-attachments/assets/6b28839b-861b-4bb1-9381-5f86fa781ab5" />
+<img width="480" height="270" alt="seifert-weber" src="doc/media/seifert-weber.gif" />
 
 ## Run the examples
 

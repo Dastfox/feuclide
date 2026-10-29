@@ -26,6 +26,7 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 - fk-render: honest GPU timers: an `offscreen` mark between the shadow pass and the renderers'
   offscreen passes (`GPU_PASSES` eight long), and each extra eye timed on its own (`elsewhere`,
   `eye 1` to `eye 3`).
+- README: the showcase's GIFs kept in the repository (`doc/media`), the 3-sphere's with them.
 
 ## 2026-10-27
 
