@@ -1,6 +1,6 @@
 [package]
 name = "fk-tools"
-description = "Offline tools: mesh refinement, golden images"
+description = "Offline tools: mesh refinement, golden images, frame drops"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -18,6 +18,9 @@ fk-render.workspace = true
 fk-scene.workspace = true
 bevy_ecs.workspace = true
 png.workspace = true
+
+[dev-dependencies]
+toml.workspace = true
 
 [lints]
 workspace = true
