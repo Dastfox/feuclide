@@ -82,6 +82,11 @@ pub(crate) fn enabled() -> bool {
     settings().is_some()
 }
 
+/// Where the recorder writes the drops, if it is on.
+pub fn dir() -> Option<&'static Path> {
+    settings().map(|settings| settings.dir.as_path())
+}
+
 /// What a drop was.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
