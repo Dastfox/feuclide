@@ -19,6 +19,7 @@
 //! reloaded on save.
 
 mod app;
+mod drops;
 pub mod input;
 pub mod keymap;
 mod pad;
@@ -32,6 +33,7 @@ pub mod tuning;
 mod window;
 
 pub use app::{ActiveGeometry, App, Plugin};
+pub use drops::{FrameDrops, FrameEvents, FrameNotes};
 pub use input::{
     ButtonInput, CursorGrab, Direction, KeyCode, MouseButton, PadButton, RawInput, Stick,
 };

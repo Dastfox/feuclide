@@ -8,6 +8,7 @@ use bevy_ecs::world::{FromWorld, World};
 use fk_geometry::Geometry;
 use fk_math::Real;
 
+use crate::drops::{FrameDrops, FrameEvents, FrameNotes};
 use crate::input::{CursorGrab, RawInput};
 use crate::profile::FrameProfile;
 use crate::progress::Progress;
@@ -62,8 +63,8 @@ pub struct App {
 
 impl App {
     /// An app with empty schedules and the [`Time`], [`RawInput`], [`CursorGrab`], [`AppExit`],
-    /// [`Handover`], [`WindowMode`], [`FrameProfile`] and [`Progress`] resources (the
-    /// handover's, built for one).
+    /// [`Handover`], [`WindowMode`], [`FrameProfile`], [`FrameDrops`], [`FrameEvents`],
+    /// [`FrameNotes`] and [`Progress`] resources (the handover's, built for one).
     pub fn new() -> Self {
         let mut world = World::new();
         let mut schedules = Schedules::new();
@@ -81,6 +82,9 @@ impl App {
         world.init_resource::<Handover>();
         world.init_resource::<WindowMode>();
         world.init_resource::<FrameProfile>();
+        world.init_resource::<FrameDrops>();
+        world.init_resource::<FrameEvents>();
+        world.init_resource::<FrameNotes>();
         world.insert_resource(Progress::building());
         Self {
             world,
@@ -195,6 +199,7 @@ impl App {
         world.run_schedule(Render);
         profile.render = lap();
         world.resource_mut::<RawInput>().end_frame();
+        world.resource_mut::<FrameEvents>().end_frame();
         world.insert_resource(profile);
         world.clear_trackers();
     }

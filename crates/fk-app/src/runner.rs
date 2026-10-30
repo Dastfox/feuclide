@@ -19,6 +19,7 @@ use winit::keyboard::PhysicalKey;
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 use crate::App;
+use crate::drops::{FrameDrops, FrameEvents, FrameWatch};
 use crate::input::{CursorGrab, RawInput};
 use crate::pad::Pads;
 use crate::window::{AppExit, Handover, Icon, Splash, WindowHandle, WindowMode, WindowSize};
@@ -94,70 +95,6 @@ struct Runner {
     error: Option<RunError>,
 }
 
-/// Watches the frame rate and logs its drops: a frame lasting much longer than the frames
-/// before it. A drop is logged at once, then those that follow within [`Self::QUIET`] are
-/// counted and logged together, so that a bad stretch is a few lines and not hundreds.
-#[derive(Debug, Default)]
-struct FrameWatch {
-    /// The usual frame's length, seconds: a moving average of the frames that were not drops.
-    usual: Option<Real>,
-    /// Drops not logged yet: how many, the longest, and when the first was.
-    pending: Option<(u32, Real, Instant)>,
-    /// When a drop was last logged.
-    logged: Option<Instant>,
-}
-
-impl FrameWatch {
-    /// A frame is a drop when it lasts this many times the usual frame...
-    const RATIO: Real = 2.0;
-    /// ...and at least this long, seconds (below 30 frames a second).
-    const LEAST: Real = 1.0 / 30.0;
-    /// How much each frame that is not a drop counts in the usual frame.
-    const WEIGHT: Real = 0.05;
-    /// Seconds after a drop is logged during which drops are counted rather than logged.
-    const QUIET: Real = 1.0;
-
-    /// Counts a frame of `delta` seconds, drawn at `now`.
-    fn frame(&mut self, delta: Real, now: Instant) {
-        let usual = *self.usual.get_or_insert(delta);
-        if delta >= Self::LEAST && delta > Self::RATIO * usual {
-            let (count, longest, _) = self.pending.get_or_insert((0, 0.0, now));
-            *count += 1;
-            *longest = longest.max(delta);
-        } else {
-            self.usual = Some(usual + (delta - usual) * Self::WEIGHT);
-        }
-        let quiet = self
-            .logged
-            .is_some_and(|logged| now.duration_since(logged).as_secs_f64() < Self::QUIET);
-        if quiet {
-            return;
-        }
-        if let Some((count, longest, first)) = self.pending.take() {
-            let fps = |seconds: Real| 1.0 / seconds.max(1e-6);
-            if count == 1 {
-                tracing::warn!(
-                    "frame drop: {:.0} ms ({:.0} fps), usually {:.1} ms ({:.0} fps)",
-                    longest * 1e3,
-                    fps(longest),
-                    usual * 1e3,
-                    fps(usual),
-                );
-            } else {
-                tracing::warn!(
-                    "frame drops: {count} in {:.1}s, the longest {:.0} ms ({:.0} fps), usually                      {:.1} ms ({:.0} fps)",
-                    now.duration_since(first).as_secs_f64(),
-                    longest * 1e3,
-                    fps(longest),
-                    usual * 1e3,
-                    fps(usual),
-                );
-            }
-            self.logged = Some(now);
-        }
-    }
-}
-
 impl Runner {
     fn input(&mut self) -> bevy_ecs::change_detection::Mut<'_, RawInput> {
         self.app.world_mut().resource_mut::<RawInput>()
@@ -175,6 +112,8 @@ impl Runner {
         let focused = self.focused;
         let mut input = self.app.world_mut().resource_mut::<RawInput>();
         self.pads.poll(&mut input, focused);
+        let drops = self.frames.drops();
+        self.app.world_mut().insert_resource::<FrameDrops>(drops);
         self.app.update(delta);
         self.apply_cursor_grab();
         self.apply_window_mode();
@@ -252,6 +191,10 @@ impl Runner {
         self.app.world_mut().insert_resource(input);
         self.last_frame = None;
         self.attach();
+        self.app
+            .world_mut()
+            .resource_mut::<FrameEvents>()
+            .add("handover", 1);
         self.app
             .world_mut()
             .resource_mut::<CursorGrab>()
@@ -575,42 +518,5 @@ impl ApplicationHandler for Runner {
                 window.request_redraw();
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use super::*;
-
-    #[test]
-    fn a_drop_does_not_become_the_usual_frame() {
-        let mut watch = FrameWatch::default();
-        let mut now = Instant::now();
-        let mut step = |watch: &mut FrameWatch, delta: Real| {
-            now += Duration::from_secs_f64(delta);
-            watch.frame(delta, now);
-        };
-        for _ in 0..100 {
-            step(&mut watch, 1.0 / 60.0);
-        }
-        step(&mut watch, 0.5);
-        assert!(watch.pending.is_none(), "the first drop is logged at once");
-        assert!(watch.logged.is_some());
-        step(&mut watch, 0.2);
-        step(&mut watch, 0.3);
-        assert_eq!(
-            watch.pending.map(|(count, longest, _)| (count, longest)),
-            Some((2, 0.3))
-        );
-        assert!((watch.usual.unwrap() - 1.0 / 60.0).abs() < 1e-9);
-        for _ in 0..60 {
-            step(&mut watch, 1.0 / 60.0);
-        }
-        assert!(
-            watch.pending.is_none(),
-            "counted drops are logged after the quiet"
-        );
     }
 }
