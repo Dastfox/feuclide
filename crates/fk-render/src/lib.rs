@@ -75,6 +75,7 @@ mod carried;
 mod color;
 mod cull;
 mod deform;
+pub mod drops;
 mod effect;
 mod elsewhere;
 mod fields;
@@ -171,7 +172,9 @@ pub enum RenderSystems {
 ///
 /// For look development, setting `FK_CAPTURE` to a file path saves one screenshot there after
 /// `FK_CAPTURE_AFTER` seconds (3 by default) and exits. For performance tests, setting
-/// `FK_PERF` to a file path records the frames' times there and exits ([`perf`]).
+/// `FK_PERF` to a file path records the frames' times there and exits ([`perf`]). To find out
+/// why frames drop, `FK_DROPS` (on in debug builds) writes the seconds round each drop to a file
+/// ([`drops`]).
 ///
 /// Frames wait for the display's refresh unless [`Vsync`] says otherwise; setting `FK_NO_VSYNC`
 /// presents them as fast as they are drawn whatever it says, to measure frame rates.
@@ -208,13 +211,19 @@ impl<G: GpuGeometry> Plugin for RenderPlugin<G> {
             .init_resource::<Overlay>()
             .init_resource::<Parting>()
             .add_systems(Startup, graph::start::<G>)
-            .add_systems(Update, (screenshot::capture_once, perf::record))
+            .add_systems(
+                Update,
+                (screenshot::capture_once, perf::record, drops::record),
+            )
             .add_systems(Render, graph::render::<G>.in_set(RenderSystems::Draw));
         if let Some(capture) = screenshot::CaptureOnce::from_env() {
             app.insert_resource(capture);
         }
         if let Some(recording) = perf::PerfRecording::from_env() {
             app.insert_resource(recording);
+        }
+        if let Some(recorder) = drops::DropRecorder::from_env() {
+            app.insert_resource(recorder);
         }
         add_renderer::<G>(app, |setup| Box::new(RasterPipeline::<G>::new(setup)));
         add_renderer::<G>(app, |setup| Box::new(RayMarchPipeline::<G>::new(setup)));

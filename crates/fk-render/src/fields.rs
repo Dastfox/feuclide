@@ -5,7 +5,7 @@
 //! would stop answering meanwhile.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Instant;
 
@@ -368,6 +368,23 @@ impl KeptFields {
     }
 }
 
+/// Pipelines built while a frame waited ([`build_now`]), asked for by a frame ([`build_soon`]),
+/// and built on threads of their own ([`spawn_builds`]), since [`counted`] last took them.
+static BUILT_NOW: AtomicU32 = AtomicU32::new(0);
+static ASKED: AtomicU32 = AtomicU32::new(0);
+static READY: AtomicU32 = AtomicU32::new(0);
+
+/// The pipelines built while a frame waited, asked for by a frame and built on threads since
+/// the last call, by the names [`FrameEvents`](fk_app::FrameEvents) counts them under; every
+/// app on the process together.
+pub(crate) fn counted() -> [(&'static str, u32); 3] {
+    [
+        ("pipelines built", BUILT_NOW.swap(0, Ordering::Relaxed)),
+        ("pipelines asked", ASKED.swap(0, Ordering::Relaxed)),
+        ("pipelines ready", READY.swap(0, Ordering::Relaxed)),
+    ]
+}
+
 /// Builds every pipeline of `needs` that is not built yet, spread over the cores, and returns
 /// once they all are.
 pub(crate) fn build_now(needs: &[(Arc<Field>, Variant)]) {
@@ -382,6 +399,7 @@ pub(crate) fn build_now(needs: &[(Arc<Field>, Variant)]) {
     let started = Instant::now();
     let count = todo.len();
     run_spread(todo, threads());
+    BUILT_NOW.fetch_add(count as u32, Ordering::Relaxed);
     tracing::info!("{count} pipelines built in {:.0?}", started.elapsed());
 }
 
@@ -406,6 +424,7 @@ pub(crate) fn build_soon(needs: &[(Arc<Field>, Variant)]) {
         })
         .cloned()
         .collect();
+    ASKED.fetch_add(todo.len() as u32, Ordering::Relaxed);
     spawn_builds(todo, "as a frame asked");
 }
 
@@ -422,6 +441,7 @@ fn spawn_builds(todo: Vec<(Arc<Field>, Variant)>, why: &'static str) {
             let started = Instant::now();
             let count = todo.len();
             run_spread(todo, threads);
+            READY.fetch_add(count as u32, Ordering::Relaxed);
             tracing::info!("{count} pipelines built {why} in {:.0?}", started.elapsed());
         });
     if let Err(error) = spawned {

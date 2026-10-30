@@ -11,8 +11,8 @@ use crate::Gpu;
 /// writes when it times its frames (only while a [`perf`](crate::perf) recording runs, on a
 /// device with timestamp queries inside encoders).
 ///
-/// Read back without waiting, so it is of a frame one to three frames old; [`serial`] grows by
-/// one with each frame read. The passes are, in order: `elsewhere` (the other eye's image, when
+/// Read back without waiting, so it is of a frame one to three frames old, [`frame`]; [`serial`]
+/// grows by one with each frame read. The passes are, in order: `elsewhere` (the other eye's image, when
 /// there is one), `shadows` (the shadow map and the renderers' offscreen passes, the ray
 /// marcher's half-resolution image among them), `opaque` (the sky and every renderer), `layer`,
 /// `settle`, each image effect by its label, `post` and `overlay`; a pass that did not run takes
@@ -24,6 +24,9 @@ use crate::Gpu;
 pub struct GpuTimings {
     /// How many frames were read before this one, and this one.
     pub serial: u64,
+    /// The frame these are of, as [`Time::frame`](fk_app::Time::frame) counted it while it was
+    /// drawn.
+    pub frame: u64,
     /// Each pass's name and duration, seconds, in the order they ran.
     pub passes: Vec<(&'static str, Real)>,
 }
@@ -45,6 +48,8 @@ struct Slot {
     buffer: wgpu::Buffer,
     /// The pass ending at each mark, `None` where the GPU starts on something new.
     names: Vec<Option<&'static str>>,
+    /// The frame written into it ([`GpuTimings::frame`]).
+    frame: u64,
     /// Set by the GPU once the buffer is mapped, or failed to be; `None` while free.
     mapped: Option<Arc<OnceLock<Result<(), wgpu::BufferAsyncError>>>>,
 }
@@ -100,6 +105,7 @@ impl GpuTimer {
                     mapped_at_creation: false,
                 }),
                 names: Vec::new(),
+                frame: 0,
                 mapped: None,
             })
             .collect();
@@ -114,13 +120,15 @@ impl GpuTimer {
         }))
     }
 
-    /// Begins a frame: it is timed if a slot is free to read it back into.
-    pub(crate) fn begin(&mut self) {
+    /// Begins the frame `frame` ([`GpuTimings::frame`]): it is timed if a slot is free to read
+    /// it back into.
+    pub(crate) fn begin(&mut self, frame: u64) {
         let Some(timer) = &mut self.0 else { return };
         let slot = &mut timer.slots[timer.next];
         timer.current = slot.mapped.is_none().then_some(timer.next);
         if timer.current.is_some() {
             slot.names.clear();
+            slot.frame = frame;
         }
     }
 
@@ -201,6 +209,7 @@ impl GpuTimer {
                         timer.serial += 1;
                         latest = Some(GpuTimings {
                             serial: timer.serial,
+                            frame: slot.frame,
                             passes: passes(&bytes, &slot.names, timer.period),
                         });
                     }

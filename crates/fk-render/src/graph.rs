@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use bevy_ecs::prelude::*;
-use fk_app::{Time, WindowHandle, WindowSize};
+use fk_app::{FrameEvents, Time, WindowHandle, WindowSize};
 use fk_geometry::{GpuGeometry, GroupElement};
 use fk_math::Real;
 use fk_math::nalgebra::{Matrix4, Rotation3, Unit, Vector3};
@@ -222,6 +222,13 @@ pub(crate) fn start<G: GpuGeometry>(world: &mut World) {
 }
 
 /// Draws one frame, opening the device first if it could not be opened at the start.
+/// Counts `n` of `name` in the frame's [`FrameEvents`], if the app keeps them.
+fn count(world: &mut World, name: &'static str, n: u32) {
+    if let Some(mut events) = world.get_resource_mut::<FrameEvents>() {
+        events.add(name, n);
+    }
+}
+
 pub(crate) fn render<G: GpuGeometry>(world: &mut World) {
     if !world.contains_resource::<RenderState<G>>()
         && world.contains_resource::<RendererFactories<G>>()
@@ -271,8 +278,9 @@ impl<G: GpuGeometry> RenderState<G> {
             apply_limit_buckets: false,
         }))
         .map_err(|error| format!("no adapter: {error}"))?;
-        // Timestamps only for a performance recording, and only where the adapter has them.
-        let timed = if crate::perf::enabled() {
+        // Timestamps only for a performance recording or the drops' recorder, and only where
+        // the adapter has them.
+        let timed = if crate::perf::enabled() || crate::drops::enabled() {
             adapter.features() & GpuTimer::FEATURES
         } else {
             wgpu::Features::empty()
@@ -419,7 +427,7 @@ impl<G: GpuGeometry> RenderState<G> {
         let late = (sample_count > 1).then(|| DepthResolve::new(&gpu.device, DEPTH_FORMAT));
         let overlay = OverlayPass::new(&gpu, format);
         let discs = DiscProbe::new(&gpu);
-        let timer = GpuTimer::new(&gpu, crate::perf::enabled());
+        let timer = GpuTimer::new(&gpu, crate::perf::enabled() || crate::drops::enabled());
         Self {
             gpu,
             shared,
@@ -633,11 +641,16 @@ impl<G: GpuGeometry> RenderState<G> {
         if self.reconfigure || (self.config.width, self.config.height) != (size.width, size.height)
         {
             self.resize(size.width, size.height);
+            count(world, "resize", 1);
+        }
+        for (name, built) in crate::fields::counted() {
+            count(world, name, built);
         }
         if let Some(timings) = self.timer.collect(&self.gpu) {
             world.insert_resource(timings);
         }
-        self.timer.begin();
+        self.timer
+            .begin(world.get_resource::<Time>().map_or(0, Time::frame));
         let aspect = Real::from(size.width) / Real::from(size.height);
         let view = world.get_resource::<ActiveView<G>>().cloned();
         // The frame's light, and the realms' own: the frame's own view is lit as its realm is.
@@ -761,6 +774,10 @@ impl<G: GpuGeometry> RenderState<G> {
                 portals_drawn |= drawn;
             }
         }
+        let eyes =
+            others_drawn.iter().filter(|drawn| **drawn).count() + usize::from(elsewhere_drawn);
+        count(world, "eyes", eyes as u32);
+        count(world, "portal views", tree.len().saturating_sub(1) as u32);
         let own = tree.first().cloned();
         world.insert_resource(PortalViews(tree));
         let mut blocks = frame_blocks(

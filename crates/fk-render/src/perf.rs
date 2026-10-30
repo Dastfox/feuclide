@@ -248,6 +248,25 @@ pub(crate) struct Drawing<'w> {
     vsync: Option<Res<'w, Vsync>>,
 }
 
+impl Drawing<'_> {
+    /// Fills a drop's report with the adapter, the image and whether frames waited for the
+    /// display.
+    pub(crate) fn describe(&self, report: &mut crate::drops::DropReport) {
+        if let Some(gpu) = &self.gpu {
+            report.adapter.clone_from(&gpu.adapter.name);
+            report.backend = format!("{:?}", gpu.adapter.backend);
+            report.driver = format!("{} {}", gpu.adapter.driver, gpu.adapter.driver_info)
+                .trim()
+                .to_owned();
+        }
+        if let Some(size) = &self.size {
+            (report.width, report.height) = (size.width, size.height);
+        }
+        report.vsync = self.vsync.as_ref().is_none_or(|vsync| vsync.0)
+            && std::env::var_os("FK_NO_VSYNC").is_none();
+    }
+}
+
 /// Records a frame of the [`PerfRecording`], if there is one, and once it is over writes its
 /// report and asks the app to exit.
 pub(crate) fn record(
@@ -439,7 +458,7 @@ fn frames_csv(samples: &[Sample]) -> String {
     csv
 }
 
-fn write_file(path: &Path, text: &str) -> Result<(), String> {
+pub(crate) fn write_file(path: &Path, text: &str) -> Result<(), String> {
     if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     }
@@ -630,6 +649,7 @@ mod tests {
                 },
                 gpu: (i % 2 == 0).then(|| GpuTimings {
                     serial: i,
+                    frame: i,
                     passes: vec![("opaque", 0.007), ("post", 0.001)],
                 }),
                 stats: RenderStats {
