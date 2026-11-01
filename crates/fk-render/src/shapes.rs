@@ -456,6 +456,200 @@ pub fn stone(scale: Vector3<Real>, lumps: Real, seed: u64) -> MeshBuilder {
     smooth(&mesh)
 }
 
+/// The surface where `distance` is nought, between `min` and `max`, in cells `cell` across: a
+/// mesh of one vertex per cell the surface crosses (where its edges cross it, averaged), its
+/// faces across the grid's edges it crosses (surface nets), each vertex's normal the field's
+/// gradient there, so that a shape blended from round parts is shaded round. `distance` is
+/// negative inside; a field farther than its true distance (a smooth union, a stretched round)
+/// is fine so long as it is no more than half again as far, since whole blocks of cells it says
+/// are far from the surface are skipped. Cut where the box ends: what reaches past it is left
+/// open there.
+pub fn field(
+    distance: impl Fn(&Vector3<Real>) -> Real,
+    min: Vector3<Real>,
+    max: Vector3<Real>,
+    cell: Real,
+) -> MeshBuilder {
+    // Cells in blocks of `BLOCK` across, each skipped whole where the field at its middle says
+    // the surface is farther than its corners.
+    const BLOCK: usize = 8;
+    let cell = cell.max(1e-6);
+    let span = max - min;
+    let n = [0, 1, 2].map(|a| ((span[a] / cell).ceil() as usize).max(1));
+    let points = [n[0] + 1, n[1] + 1, n[2] + 1];
+    let point = |i: usize, j: usize, k: usize| i + points[0] * (j + points[1] * k);
+    let at =
+        |i: usize, j: usize, k: usize| min + Vector3::new(i as Real, j as Real, k as Real) * cell;
+    let mut values = vec![Real::NAN; points[0] * points[1] * points[2]];
+    let blocks = n.map(|c| c.div_ceil(BLOCK));
+    let mut near = Vec::new();
+    let reach = (BLOCK as Real) * cell * 3.0_f64.sqrt() / 2.0 * 1.5 + cell;
+    for bk in 0..blocks[2] {
+        for bj in 0..blocks[1] {
+            for bi in 0..blocks[0] {
+                let lo = [bi, bj, bk].map(|b| b * BLOCK);
+                let hi = [0, 1, 2].map(|a| (lo[a] + BLOCK).min(n[a]));
+                let middle = (at(lo[0], lo[1], lo[2]) + at(hi[0], hi[1], hi[2])) / 2.0;
+                if distance(&middle).abs() > reach {
+                    continue;
+                }
+                for k in lo[2]..=hi[2] {
+                    for j in lo[1]..=hi[1] {
+                        for i in lo[0]..=hi[0] {
+                            let v = &mut values[point(i, j, k)];
+                            if v.is_nan() {
+                                *v = distance(&at(i, j, k));
+                            }
+                        }
+                    }
+                }
+                near.push((lo, hi));
+            }
+        }
+    }
+    // A vertex in every cell the surface crosses.
+    let mut mesh = MeshBuilder::new();
+    let mut vertices: HashMap<[usize; 3], u32> = HashMap::new();
+    let corners = [
+        [0, 0, 0],
+        [1, 0, 0],
+        [0, 1, 0],
+        [1, 1, 0],
+        [0, 0, 1],
+        [1, 0, 1],
+        [0, 1, 1],
+        [1, 1, 1],
+    ];
+    let edges = [
+        (0, 1),
+        (2, 3),
+        (4, 5),
+        (6, 7),
+        (0, 2),
+        (1, 3),
+        (4, 6),
+        (5, 7),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ];
+    let gradient = |p: &Vector3<Real>| {
+        let h = cell * 0.25;
+        Vector3::new(
+            distance(&(p + Vector3::x() * h)) - distance(&(p - Vector3::x() * h)),
+            distance(&(p + Vector3::y() * h)) - distance(&(p - Vector3::y() * h)),
+            distance(&(p + Vector3::z() * h)) - distance(&(p - Vector3::z() * h)),
+        )
+    };
+    for &(lo, hi) in &near {
+        for k in lo[2]..hi[2] {
+            for j in lo[1]..hi[1] {
+                for i in lo[0]..hi[0] {
+                    let d = corners.map(|[a, b, c]| values[point(i + a, j + b, k + c)]);
+                    if d.iter().any(|v| v.is_nan())
+                        || d.iter().all(|&v| v < 0.0)
+                        || d.iter().all(|&v| v >= 0.0)
+                    {
+                        continue;
+                    }
+                    let mut sum = Vector3::zeros();
+                    let mut count = 0.0;
+                    for (a, b) in edges {
+                        if (d[a] < 0.0) != (d[b] < 0.0) {
+                            let t = d[a] / (d[a] - d[b]);
+                            let pa = at(i + corners[a][0], j + corners[a][1], k + corners[a][2]);
+                            let pb = at(i + corners[b][0], j + corners[b][1], k + corners[b][2]);
+                            sum += pa + (pb - pa) * t;
+                            count += 1.0;
+                        }
+                    }
+                    let p = sum / count;
+                    let g = gradient(&p);
+                    let normal = if g.norm() > 1e-12 { g } else { Vector3::y() };
+                    vertices.insert([i, j, k], mesh.vertex(p, normal));
+                }
+            }
+        }
+    }
+    // A quad across every grid edge the surface crosses, of the four cells round it.
+    let mut quad = |cells: [[usize; 3]; 4], outward: Vector3<Real>| {
+        let Some(v) = cells
+            .iter()
+            .map(|c| vertices.get(c).copied())
+            .collect::<Option<Vec<u32>>>()
+        else {
+            return;
+        };
+        // Split along the shorter diagonal, each half facing the way its corners are shaded.
+        let ps = mesh.positions();
+        let diagonal = |a: u32, b: u32| (ps[a as usize] - ps[b as usize]).norm();
+        let halves = if diagonal(v[0], v[2]) <= diagonal(v[1], v[3]) {
+            [[v[0], v[1], v[2]], [v[0], v[2], v[3]]]
+        } else {
+            [[v[0], v[1], v[3]], [v[1], v[2], v[3]]]
+        };
+        for [a, b, c] in halves {
+            let ps = mesh.positions();
+            let ns = mesh.normals();
+            let (pa, pb, pc) = (ps[a as usize], ps[b as usize], ps[c as usize]);
+            let shaded = ns[a as usize] + ns[b as usize] + ns[c as usize];
+            let facing = if shaded.norm() > 1e-9 {
+                shaded
+            } else {
+                outward
+            };
+            if (pb - pa).cross(&(pc - pa)).dot(&facing) >= 0.0 {
+                mesh.triangle(a, b, c);
+            } else {
+                mesh.triangle(a, c, b);
+            }
+        }
+    };
+    for &(lo, hi) in &near {
+        // Each point once: a block holds its far faces' points only at the grid's end.
+        let end = [0, 1, 2].map(|a| if hi[a] == n[a] { hi[a] + 1 } else { hi[a] });
+        for k in lo[2]..end[2] {
+            for j in lo[1]..end[1] {
+                for i in lo[0]..end[0] {
+                    let here = values[point(i, j, k)];
+                    if here.is_nan() {
+                        continue;
+                    }
+                    for axis in 0..3 {
+                        let mut next = [i, j, k];
+                        next[axis] += 1;
+                        if next[axis] > n[axis] {
+                            continue;
+                        }
+                        let there = values[point(next[0], next[1], next[2])];
+                        if there.is_nan() || (here < 0.0) == (there < 0.0) {
+                            continue;
+                        }
+                        let (u, w) = ((axis + 1) % 3, (axis + 2) % 3);
+                        if [i, j, k][u] == 0 || [i, j, k][w] == 0 {
+                            continue;
+                        }
+                        let cell_at = |du: usize, dw: usize| {
+                            let mut c = [i, j, k];
+                            c[u] -= du;
+                            c[w] -= dw;
+                            c
+                        };
+                        let mut outward = Vector3::zeros();
+                        outward[axis] = if here < 0.0 { 1.0 } else { -1.0 };
+                        quad(
+                            [cell_at(1, 1), cell_at(0, 1), cell_at(0, 0), cell_at(1, 0)],
+                            outward,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    mesh
+}
+
 /// `mesh` shaded round: each vertex's normal the mean of the faces meeting where it stands,
 /// weighted by their areas. For things whose every facet stands for a curve (a boulder); a
 /// square-cut thing keeps its own normals.
@@ -506,6 +700,44 @@ mod tests {
         for normal in normals {
             assert!((normal.norm() - 1.0).abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn a_field_is_meshed_closed_on_its_surface_and_facing_out() {
+        let centre = Vector3::new(0.3, -0.2, 0.1);
+        let ball = |p: &Vector3<Real>| (p - centre).norm() - 1.3;
+        let reach = Vector3::repeat(2.0);
+        let mesh = field(ball, centre - reach, centre + reach, 0.1);
+        assert_outward("field", &mesh);
+        for (p, n) in mesh.positions().iter().zip(mesh.normals()) {
+            assert!(ball(p).abs() < 0.02, "{p:?} off the surface");
+            assert!(
+                n.dot(&(p - centre).normalize()) > 0.99,
+                "{p:?} shaded askew"
+            );
+        }
+        // Closed: every edge two triangles'.
+        let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
+        for t in mesh.indices().chunks(3) {
+            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                *edges.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        assert!(edges.values().all(|&count| count == 2), "holes or folds");
+        // About its area.
+        let area: Real = mesh
+            .indices()
+            .chunks(3)
+            .map(|t| {
+                let [a, b, c] = [0, 1, 2].map(|k| mesh.positions()[t[k] as usize]);
+                (b - a).cross(&(c - a)).norm() / 2.0
+            })
+            .sum();
+        let sphere = 4.0 * std::f64::consts::PI * 1.3 * 1.3;
+        assert!(
+            (area / sphere - 1.0).abs() < 0.05,
+            "area {area} for {sphere}"
+        );
     }
 
     #[test]
