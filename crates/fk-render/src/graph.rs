@@ -10,7 +10,7 @@ use fk_app::{FrameEvents, Time, WindowHandle, WindowSize};
 use fk_geometry::{GpuGeometry, GroupElement};
 use fk_math::Real;
 use fk_math::nalgebra::{Matrix4, Rotation3, Unit, Vector3};
-use fk_scene::{ActiveView, Realm};
+use fk_scene::{ActiveView, DrawnView, Realm};
 
 use crate::carried::CarriedImage;
 use crate::effect::{
@@ -662,7 +662,11 @@ impl<G: GpuGeometry> RenderState<G> {
         self.timer
             .begin(world.get_resource::<Time>().map_or(0, Time::frame));
         let aspect = Real::from(size.width) / Real::from(size.height);
-        let view = world.get_resource::<ActiveView<G>>().cloned();
+        // Drawn from a spectator's eye while one is set, from the active camera's otherwise.
+        let view = world
+            .get_resource::<DrawnView<G>>()
+            .map(|drawn| drawn.0.clone())
+            .or_else(|| world.get_resource::<ActiveView<G>>().cloned());
         // The frame's light, and the realms' own: the frame's own view is lit as its realm is.
         let frame_lighting = world
             .get_resource::<Lighting>()

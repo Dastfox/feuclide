@@ -64,9 +64,10 @@ impl<G: Geometry> Clone for Camera<G> {
     }
 }
 
-/// The camera drawn from this frame, as a resource: which entity, its settings and where its
-/// eye is. Written by [`SceneSystems::CameraRelative`](crate::SceneSystems::CameraRelative);
-/// absent while no camera is active.
+/// The active camera this frame, as a resource: which entity, its settings and where its eye
+/// is. The frame is drawn from it, unless a [`Spectator`] eye is set ([`DrawnView`]). Written by
+/// [`SceneSystems::CameraRelative`](crate::SceneSystems::CameraRelative); absent while no
+/// camera is active.
 #[derive(Resource, Debug)]
 pub struct ActiveView<G: Geometry> {
     /// The camera entity.
@@ -90,7 +91,58 @@ impl<G: Geometry> Clone for ActiveView<G> {
     }
 }
 
-/// An entity's pose relative to the active camera's eye, `view⁻¹ ∘ global`, computed in `f64`.
+/// An eye the frame is drawn from in place of the active camera's, as a resource: a camera
+/// outside, to watch the scene from, while the [`ActiveView`] stays the active camera's for
+/// everything that reads it (what it sees, where it hears, what it may do). With no
+/// [`eye`](Self::eye), the frame is drawn from the active camera.
+///
+/// The engine gives it no meaning. It is drawn with the active camera's settings and realm,
+/// but for its own field of view and far, if it has them.
+#[derive(Resource, Debug)]
+pub struct Spectator<G: Geometry> {
+    /// Its global pose, if it is set.
+    pub eye: Option<G::Isometry>,
+    /// Its vertical field of view, radians, if not the active camera's.
+    pub fov_y: Option<Real>,
+    /// Its far, if not the active camera's.
+    pub far: Option<Real>,
+}
+
+impl<G: Geometry> Default for Spectator<G> {
+    fn default() -> Self {
+        Self {
+            eye: None,
+            fov_y: None,
+            far: None,
+        }
+    }
+}
+
+impl<G: Geometry> Clone for Spectator<G> {
+    fn clone(&self) -> Self {
+        Self {
+            eye: self.eye,
+            fov_y: self.fov_y,
+            far: self.far,
+        }
+    }
+}
+
+/// The view the frame is drawn from, as a resource: the [`ActiveView`], or while a
+/// [`Spectator`] eye is set, the active camera seen from there (that eye, its field of view and
+/// far if it has them). [`ViewRelative`] poses are relative to its eye. Written with the
+/// [`ActiveView`], absent with it.
+#[derive(Resource, Debug)]
+pub struct DrawnView<G: Geometry>(pub ActiveView<G>);
+
+impl<G: Geometry> Clone for DrawnView<G> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+/// An entity's pose relative to the eye the frame is drawn from ([`DrawnView`]: the active
+/// camera's, or a [`Spectator`]'s), `view⁻¹ ∘ global`, computed in `f64`.
 ///
 /// This is what reaches the GPU: near the eye it is small, so converting it to `f32` loses
 /// nothing that matters, however far the scene is from the root. Written for every entity with
@@ -121,24 +173,40 @@ type Eye<'a, G> = (
     Option<&'a GlobalRealm>,
 );
 
-/// Finds the active camera and writes every entity's [`ViewRelative`] pose.
+/// Finds the active camera, and the view drawn from (a [`Spectator`]'s, if one is set), and
+/// writes every entity's [`ViewRelative`] pose.
 pub fn update_view_relative<G: Geometry>(
     mut commands: Commands,
     cameras: Query<Eye<G>>,
+    spectator: Option<Res<Spectator<G>>>,
     mut relative: Query<(&GlobalPose<G>, &mut ViewRelative<G>)>,
 ) {
     let Some((entity, camera, eye, realm)) = cameras.iter().find(|(_, camera, _, _)| camera.active)
     else {
         commands.remove_resource::<ActiveView<G>>();
+        commands.remove_resource::<DrawnView<G>>();
         return;
     };
-    let view_inverse = eye.isometry.inverse();
-    commands.insert_resource(ActiveView {
+    let active = ActiveView {
         entity,
         camera: camera.clone(),
         eye: eye.clone(),
         realm: realm.map_or(Realm::MAIN, |realm| realm.0),
-    });
+    };
+    let mut drawn = active.clone();
+    if let Some(spectator) = spectator.as_deref()
+        && let Some(eye) = spectator.eye
+    {
+        drawn.eye.isometry = eye;
+        drawn.camera.fov_y = spectator.fov_y.unwrap_or(drawn.camera.fov_y);
+        drawn.camera.far = spectator
+            .far
+            .unwrap_or(drawn.camera.far)
+            .max(2.0 * drawn.camera.near);
+    }
+    let view_inverse = drawn.eye.isometry.inverse();
+    commands.insert_resource(active);
+    commands.insert_resource(DrawnView(drawn));
     for (global, mut relative) in &mut relative {
         relative.0 = view_inverse.compose(&global.isometry);
     }

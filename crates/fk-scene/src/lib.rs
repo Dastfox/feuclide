@@ -31,7 +31,7 @@ use bevy_ecs::schedule::{IntoScheduleConfigs, SystemSet};
 use fk_app::{App, FixedUpdate, Plugin, PostUpdate};
 use fk_geometry::Geometry;
 
-pub use camera::{ActiveView, Camera, ViewRelative, update_view_relative};
+pub use camera::{ActiveView, Camera, DrawnView, Spectator, ViewRelative, update_view_relative};
 pub use chart::{ChartTag, Letter};
 pub use origin::{FloatingOrigin, rebase};
 pub use portal::{Crossing, Mouth, Portal, Portals, cross, form_through, plane_form};
@@ -49,8 +49,8 @@ pub enum SceneSystems {
     Rebase,
     /// Writes [`GlobalPose`]s and [`GlobalRealm`]s, in [`PostUpdate`].
     Propagate,
-    /// Finds the [`ActiveView`] and writes [`ViewRelative`] poses, in [`PostUpdate`] after
-    /// [`Propagate`](Self::Propagate).
+    /// Finds the [`ActiveView`] and the [`DrawnView`] and writes [`ViewRelative`] poses, in
+    /// [`PostUpdate`] after [`Propagate`](Self::Propagate).
     CameraRelative,
 }
 
@@ -195,6 +195,44 @@ mod tests {
         let seen = E3::apply(&relative, &E3::origin());
         // 3 units along root −z, which the eye's quarter turn makes its +x: to the right.
         assert!(close(seen, Point3::new(3.0, 0.0, 0.0)), "{seen}");
+    }
+
+    #[test]
+    fn a_spectator_draws_the_frame_and_the_active_view_stays() {
+        let mut app = app();
+        let world = app.world_mut();
+        let eye = translation(0.0, 1.0, 5.0);
+        let camera = world
+            .spawn((Pose::<E3>(eye), Camera::<E3>::new(1.0, 0.1, 100.0)))
+            .id();
+        let thing = world.spawn(Pose::<E3>(translation(0.0, 1.0, 2.0))).id();
+        let above = translation(0.0, 20.0, 2.0);
+        world.insert_resource(Spectator::<E3> {
+            eye: Some(above),
+            fov_y: Some(0.5),
+            far: None,
+        });
+        app.update(0.0);
+        let world = app.world();
+        let active = world.resource::<ActiveView<E3>>();
+        assert_eq!(active.entity, camera);
+        assert!(close(
+            E3::apply(&active.eye.isometry, &E3::origin()),
+            Point3::new(0.0, 1.0, 5.0)
+        ));
+        let drawn = &world.resource::<DrawnView<E3>>().0;
+        assert_eq!(drawn.camera.fov_y, 0.5);
+        assert_eq!(drawn.camera.far, 100.0);
+        // Relative to the spectator: 19 units straight down under it.
+        let relative = world.get::<ViewRelative<E3>>(thing).unwrap().0;
+        let seen = E3::apply(&relative, &E3::origin());
+        assert!(close(seen, Point3::new(0.0, -19.0, 0.0)), "{seen}");
+        // Unset, the frame is the active camera's again.
+        app.world_mut().resource_mut::<Spectator<E3>>().eye = None;
+        app.update(0.0);
+        let relative = app.world().get::<ViewRelative<E3>>(thing).unwrap().0;
+        let seen = E3::apply(&relative, &E3::origin());
+        assert!(close(seen, Point3::new(0.0, 0.0, -3.0)), "{seen}");
     }
 
     /// The eye flies twenty units straight on in H³ with a beacon flying the same way one unit

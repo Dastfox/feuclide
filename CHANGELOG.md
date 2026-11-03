@@ -9,6 +9,10 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 
 ## Unreleased
 
+- fk-scene: `Spectator`, an eye the frame is drawn from in place of the active camera's (its own
+  field of view and far if it has them), while `ActiveView` stays the active camera's for
+  everything that reads it; `DrawnView`, the view the frame is drawn from, which `ViewRelative`
+  poses are now relative to. fk-render draws the frame from the `DrawnView`.
 - fk-scene: realms, parallel worlds at their own origins (`Realm` on an entity and all under
   it, `GlobalRealm` resolved with the poses, `Realms` naming them, `ActiveView::realm`), and
   portals between them (`Portal`, its openings `Mouth`, `Portals::cross` and `cross` for a body
