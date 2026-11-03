@@ -9,6 +9,15 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 
 ## Unreleased
 
+## 2026-11-03
+
+fk-app 0.3.0, fk-audio 0.3.0, fk-scene 0.3.0, fk-quotient 0.3.0, fk-physics 0.3.0, fk-shaders 0.2.0,
+fk-render 0.3.0, feuclide 0.3.0, fk-assets 0.3.0, fk-flat 0.3.0, fk-sky 0.3.0, fk-ui 0.3.0
+
+- Release: fk-shaders 0.2.0 and fk-app 0.3.0 with every crate on it, for the realms and
+  portals, the spectator's eye, the 32 point lights, the frame drops and the meshes' balls
+  (breaking: `WindowConfig::icon`, `ActiveView::realm`, `FrameView`'s new fields,
+  `DeformShader` no longer `Eq`, the `View` uniform's portal forms).
 - fk-scene: `Spectator`, an eye the frame is drawn from in place of the active camera's (its own
   field of view and far if it has them), while `ActiveView` stays the active camera's for
   everything that reads it; `DrawnView`, the view the frame is drawn from, which `ViewRelative`
@@ -27,7 +36,6 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 - fk-physics: `RealmColliders`, each realm's colliders, and `Character::through`, a character
   carried through the portal it walked through.
 - examples: `portals`, a meadow, a room and an endless corridor at the same coordinates.
-
 - fk-render: the layer render (`LayerRender`) is cleared to its clear colour's alpha, no longer
   always opaque, so that a reader may lay what is drawn on it over something else by the alpha.
 - fk-physics: `move_through` finds the way out of a surface once a step rather than twice.
