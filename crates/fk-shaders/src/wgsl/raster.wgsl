@@ -223,9 +223,14 @@ fn paint(in: Varyings) -> vec4<f32> {
     let tone = select(1.0, mix(texel.a * 1.5, 1.0, flattened), in.uv.z > 0.5);
     let sun = geo_transport_from_eye(p, lighting.sun_direction);
     let facing = geo_inner(p, n, sun) * inverseSqrt(max(geo_inner(p, n, n) * geo_inner(p, sun, sun), 1e-12));
-    // Cast shadows take the painted shadow colour, like the sides turned away from the light.
-    let shadow = shadow_light(p, n.xyz * inverseSqrt(max(dot(n.xyz, n.xyz), 1e-12)));
-    let light = mix(lighting.shadow_tint.rgb, lighting.sun_color.rgb, banded(facing) * shadow);
+    // Cast shadows take the painted shadow colour, like the sides turned away from the light;
+    // a side turned away takes it whatever the map says, so the map is not read there.
+    let sunlit = banded(facing);
+    var shadow = 1.0;
+    if sunlit > 0.0 {
+        shadow = shadow_light(p, n.xyz * inverseSqrt(max(dot(n.xyz, n.xyz), 1e-12)));
+    }
+    let light = mix(lighting.shadow_tint.rgb, lighting.sun_color.rgb, sunlit * shadow);
     let lit = in.color.rgb * tone * (light + point_lights(p, n));
 
     // Fade fully into the sky before the far surface, so culling there is invisible. The fog

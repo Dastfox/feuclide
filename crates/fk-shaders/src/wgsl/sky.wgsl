@@ -19,7 +19,11 @@ fn disc_angle(disc: Disc, dir: vec3<f32>) -> f32 {
     return acos(clamp(dot(dir, disc.direction.xyz), -1.0, 1.0));
 }
 
+// Nothing, and nothing worked out, for a disc with no glow colour.
 fn disc_glow(disc: Disc, dir: vec3<f32>) -> vec3<f32> {
+    if all(disc.glow.rgb == vec3<f32>(0.0)) {
+        return vec3<f32>(0.0);
+    }
     return disc.glow.rgb * exp(-disc_angle(disc, dir) / max(disc.glow.w, 1e-4));
 }
 
