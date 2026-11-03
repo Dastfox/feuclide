@@ -42,6 +42,25 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
   offscreen passes (`GPU_PASSES` eight long), and each extra eye timed on its own (`elsewhere`,
   `eye 1` to `eye 3`).
 - README: the showcase's GIFs kept in the repository (`doc/media`), the 3-sphere's with them.
+- fk-app: `FrameWatch` ends a sag once the usual frame is back within a hundredth of the
+  target, no longer never at a steady target frame rate.
+- fk-app: `FK_FIXED_DELTA=<seconds>` makes every frame count that long however long it took, so
+  two builds' captures can be held against each other pixel for pixel.
+- fk-render: instances culled by the smallest ball about the mesh's middle (`Mesh::ball`), no
+  longer about its authoring origin, in the view, the shadow map and the sphere's far side.
+- fk-render: a deform says how far it may move a vertex (`DeformShader::reach`, `Reach::Within`
+  or `Unbounded`, `Deforms::set_reach`, `Mesh::height`), and its instances are culled by the
+  tight ball grown by that. `DeformShader` is no longer `Eq`.
+- fk-render: the sky drawn last, only where nothing was (depth tested equal to the far surface,
+  its position invariant); the painted fragment skips the shadow taps turned from the sun. The
+  image is the same.
+- fk-render: the frame keeps two images and image effects draw from one into the other
+  (`EffectImage`, `Drew::Over` or `InPlace`, `EffectTargets`), the settle too: no copies of the
+  whole image. fk-game's fade draws over.
+- fk-render: `MAX_POINT_LIGHTS` 32, each instance lit only by the lights that reach its ball.
+- fk-render: a portal view no longer draws what lies wholly out of its region or in one of its
+  cuts (`FrameView::kept`, `PortalView::drops`, `Region::ball`), nor resolves its samples.
+- fk-tools: the drops sorted by key, as the newer clippy asks.
 
 ## 2026-10-27
 
