@@ -1,5 +1,6 @@
-// The sky pass: one fullscreen triangle drawn first in the opaque pass, behind everything,
-// where the view sees all the way out (`fk::portal`).
+// The sky pass: one fullscreen triangle drawn last in the opaque pass, on the far surface
+// (depth 0, tested equal: only where nothing was drawn), where the view sees all the way out
+// (`fk::portal`).
 
 #import fk::view::{view, pixel_to_ndc}
 #import fk::sky::sky_color

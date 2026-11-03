@@ -921,7 +921,6 @@ impl<G: GpuGeometry> RenderState<G> {
                 ..Default::default()
             });
             if view.is_some() {
-                self.sky.render(&mut pass, &self.frame.bind_group);
                 let bindings = FrameBindings {
                     frame: &self.frame.bind_group,
                     shadows: &self.shadow_map.bind_group,
@@ -931,6 +930,7 @@ impl<G: GpuGeometry> RenderState<G> {
                 for renderer in &self.renderers {
                     renderer.render(&mut pass, &bindings);
                 }
+                self.sky.render(&mut pass, &self.frame.bind_group);
             }
         }
         self.timer.mark(&mut encoder, "opaque");
@@ -1306,7 +1306,6 @@ impl<G: GpuGeometry> RenderState<G> {
                 let [x, y, width, height] = scissor(part, [size.width, size.height]);
                 pass.set_scissor_rect(x, y, width, height);
             }
-            self.sky.render(&mut pass, &self.frame.bind_group);
             let bindings = FrameBindings {
                 frame: &self.frame.bind_group,
                 shadows: &self.shadow_map.bind_group,
@@ -1316,6 +1315,7 @@ impl<G: GpuGeometry> RenderState<G> {
             for renderer in &self.renderers {
                 renderer.render(&mut pass, &bindings);
             }
+            self.sky.render(&mut pass, &self.frame.bind_group);
         }
         // Each eye timed on its own: the `Elsewhere` eye under `elsewhere`, the others under
         // `eye 1` to `eye 3`.
@@ -1455,7 +1455,6 @@ impl<G: GpuGeometry> RenderState<G> {
             });
             let [x, y, width, height] = scissor(seen.part, [size.width, size.height]);
             pass.set_scissor_rect(x, y, width, height);
-            self.sky.render(&mut pass, &self.frame.bind_group);
             let bindings = FrameBindings {
                 frame: &self.frame.bind_group,
                 shadows: &self.shadow_map.bind_group,
@@ -1465,6 +1464,7 @@ impl<G: GpuGeometry> RenderState<G> {
             for renderer in &self.renderers {
                 renderer.render(&mut pass, &bindings);
             }
+            self.sky.render(&mut pass, &self.frame.bind_group);
         }
         self.timer.mark(
             &mut encoder,

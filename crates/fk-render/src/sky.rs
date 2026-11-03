@@ -1,4 +1,4 @@
-//! The sky pass: a fullscreen triangle drawn first in the opaque pass.
+//! The sky pass: a fullscreen triangle drawn last in the opaque pass, where nothing was.
 
 use crate::Gpu;
 use crate::effect::SkyFigure;
@@ -41,12 +41,13 @@ impl SkyPass {
                 buffers: &[],
             },
             primitive: Default::default(),
-            // Behind everything: it neither tests nor writes depth, which stays at the far
-            // surface for the renderers drawn after it.
+            // After everything, only where nothing was drawn: the far surface (depth 0, as its
+            // vertices are) still there. A sample covered never needed it, nothing in the pass
+            // blending, and one left uncovered gets the colour at its pixel's middle as before.
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: depth_format,
                 depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Always),
+                depth_compare: Some(wgpu::CompareFunction::Equal),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
