@@ -166,6 +166,7 @@ impl<G: GpuGeometry> Offscreen<G> {
             portal: None,
             realm: fk_scene::Realm::MAIN,
             clipped: false,
+            kept: None,
         };
         let size = WindowSize {
             width,

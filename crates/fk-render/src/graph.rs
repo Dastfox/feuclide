@@ -850,6 +850,7 @@ impl<G: GpuGeometry> RenderState<G> {
                 portal: None,
                 realm: view.realm,
                 clipped: own.as_ref().is_some_and(PortalView::clips),
+                kept: own.as_ref(),
             };
             for renderer in &mut self.renderers {
                 renderer.prepare(&self.gpu, world, &frame_view);
@@ -1280,6 +1281,7 @@ impl<G: GpuGeometry> RenderState<G> {
             portal: None,
             realm: seen.realm,
             clipped: clip.is_some(),
+            kept: None,
         };
         for renderer in &mut self.renderers {
             renderer.prepare(&self.gpu, world, &frame_view);
@@ -1435,6 +1437,7 @@ impl<G: GpuGeometry> RenderState<G> {
             portal: Some(shift),
             realm: seen.realm,
             clipped: true,
+            kept: Some(seen),
         };
         for renderer in &mut self.renderers {
             renderer.prepare(&self.gpu, world, &frame_view);
@@ -1463,7 +1466,7 @@ impl<G: GpuGeometry> RenderState<G> {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("fk portal"),
-                color_attachments: &[Some(kept_color_attachment(
+                color_attachments: &[Some(unresolved_color_attachment(
                     targets.multisampled.as_ref(),
                     &targets.image_views[0],
                     clear,
@@ -1612,6 +1615,19 @@ fn kept_color_attachment<'a>(
             ops,
         },
     }
+}
+
+/// As [`kept_color_attachment`], but never resolved: a view seen through a portal, drawn into
+/// the frame's samples before the frame's own opaque pass, which resolves them all (the image
+/// is read by nothing in between).
+fn unresolved_color_attachment<'a>(
+    samples: Option<&'a wgpu::TextureView>,
+    resolved: &'a wgpu::TextureView,
+    clear: Option<wgpu::Color>,
+) -> wgpu::RenderPassColorAttachment<'a> {
+    let mut attachment = kept_color_attachment(samples, resolved, clear);
+    attachment.resolve_target = None;
+    attachment
 }
 
 /// A colour attachment cleared to `clear`: drawn into `samples` and resolved into `resolved`

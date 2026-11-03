@@ -77,6 +77,10 @@ pub struct FrameView<'a, G: GpuGeometry> {
     /// plane ([`Elsewhere::clip`](crate::Elsewhere::clip)), out of its region of the portals'
     /// tree or in a region cut from it, drawing through its clipped pipelines.
     pub clipped: bool,
+    /// Its view of the portals' tree, when it has one: its region and its cuts, what a clipped
+    /// view drops. An instance wholly out of the region or wholly in a cut is then not drawn
+    /// (every fragment of it would be dropped).
+    pub kept: Option<&'a crate::PortalView<G>>,
 }
 
 impl<G: GpuGeometry> FrameView<'_, G> {

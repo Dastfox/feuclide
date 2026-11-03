@@ -350,6 +350,8 @@ pub struct RasterPipeline<G: GpuGeometry> {
     /// By eye, as [`Candidate::window`] numbers them.
     window_bins: [BTreeMap<BinKey, Vec<GpuInstance>>; 1 + MAX_OTHER_EYES],
     instances: Option<wgpu::Buffer>,
+    /// Every instance queued this frame, in the order of the draws.
+    all: Vec<GpuInstance>,
     draws: Vec<Draw>,
     shadow_draws: Vec<Draw>,
     layer_draws: Vec<Draw>,
@@ -426,6 +428,7 @@ impl<G: GpuGeometry> RasterPipeline<G> {
             layer_bins: BTreeMap::new(),
             window_bins: Default::default(),
             instances: None,
+            all: Vec::new(),
             draws: Vec::new(),
             shadow_draws: Vec::new(),
             layer_draws: Vec::new(),
@@ -925,7 +928,14 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                 ),
                 None => (G::apply(&candidate.relative, &origin), mesh.radius),
             };
-            let seen = view.frustum.sees::<G>(&centre, radius);
+            // Every fragment of it dropped by the view's region and cuts (flat space: the
+            // forms are planes there): not drawn to it, its shadow cast as before.
+            let dropped = view.clipped
+                && G::constant_curvature() == Some(0.0)
+                && view
+                    .kept
+                    .is_some_and(|kept| kept.drops(&G::embed_point(&centre), radius));
+            let seen = !dropped && view.frustum.sees::<G>(&centre, radius);
             // Cast into the map, and only where its shadow can fall in view.
             let casts = candidate.casts
                 && view
@@ -996,7 +1006,9 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                 self.shadow_bins.entry(cast_key).or_default().push(instance);
             }
         }
-        let mut all = Vec::with_capacity(self.candidates.len());
+        // Kept from frame to frame, so that its megabyte is not allocated anew each frame.
+        let mut all = std::mem::take(&mut self.all);
+        all.clear();
         Self::collect(&mut self.bins, &mut all, &mut self.draws);
         stats.drawn = all.len();
         stats.draws = self.draws.len();
@@ -1007,6 +1019,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
         }
         self.stats = stats;
         if all.is_empty() {
+            self.all = all;
             return;
         }
         let bytes: &[u8] = bytemuck::cast_slice(&all);
@@ -1025,6 +1038,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
         if let Some(buffer) = &self.instances {
             gpu.queue.write_buffer(buffer, 0, bytes);
         }
+        self.all = all;
     }
 
     fn render_shadows(&self, pass: &mut wgpu::RenderPass<'_>, frame: &wgpu::BindGroup) {
@@ -1128,6 +1142,7 @@ mod tests {
             portal: None,
             realm: fk_scene::Realm::MAIN,
             clipped: false,
+            kept: None,
         };
         pipeline.prepare(gpu, world, &view);
         pipeline.queue(gpu, &view);
@@ -1289,6 +1304,7 @@ mod tests {
             portal: None,
             realm: fk_scene::Realm::MAIN,
             clipped: false,
+            kept: None,
         };
         let size = WindowSize {
             width,

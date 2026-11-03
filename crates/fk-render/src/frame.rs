@@ -221,7 +221,9 @@ impl Default for Vsync {
 impl Vsync {
     /// The surface's present mode for this, `FK_NO_VSYNC` taken into account.
     pub(crate) fn present_mode(self) -> wgpu::PresentMode {
-        if self.0 && std::env::var_os("FK_NO_VSYNC").is_none() {
+        static NO_VSYNC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let no_vsync = *NO_VSYNC.get_or_init(|| std::env::var_os("FK_NO_VSYNC").is_some());
+        if self.0 && !no_vsync {
             wgpu::PresentMode::AutoVsync
         } else {
             wgpu::PresentMode::AutoNoVsync

@@ -83,6 +83,51 @@ impl Region {
     pub fn is_whole(&self) -> bool {
         self.sides.is_empty() && self.plane.is_none()
     }
+
+    /// Where the flat-space ball of radius `radius` about the embedded point `centre` (in the
+    /// eye's frame, its last coordinate 1) lies: wholly out of the region (on the wrong side of
+    /// one of its planes by more than the radius), wholly in it, or across it. `slack` widens
+    /// what counts as across, for points the GPU works out in f32.
+    pub fn ball(&self, centre: &Vector4<Real>, radius: Real, slack: Real) -> Side {
+        let mut inside = true;
+        for form in self.forms() {
+            let length = form.xyz().norm();
+            if length <= 0.0 {
+                return Side::Across;
+            }
+            let signed = form.dot(centre) / length;
+            if signed < -(radius + slack) {
+                return Side::Out;
+            }
+            inside &= signed > radius + slack;
+        }
+        if inside { Side::In } else { Side::Across }
+    }
+}
+
+/// Where a ball lies against a [`Region`] ([`Region::ball`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    /// Wholly out of it.
+    Out,
+    /// Wholly in it.
+    In,
+    /// Partly in it, or not known.
+    Across,
+}
+
+impl<G: Geometry> PortalView<G> {
+    /// Whether a clipped view drops every point of the flat-space ball of radius `radius` about
+    /// the embedded point `centre` (in its eye's frame): the ball wholly out of its region, or
+    /// wholly in one of its cuts.
+    pub fn drops(&self, centre: &Vector4<Real>, radius: Real) -> bool {
+        const SLACK: Real = 1e-3;
+        self.region.ball(centre, radius, SLACK) == Side::Out
+            || self
+                .cuts
+                .iter()
+                .any(|cut| cut.ball(centre, radius, SLACK) == Side::In)
+    }
 }
 
 /// One view of the tree: an eye in a realm, what it keeps and what it leaves to others.
@@ -622,6 +667,56 @@ mod tests {
             assert_eq!(view.cuts.len(), 1);
         }
         assert!(views[4].cuts.is_empty());
+    }
+
+    #[test]
+    fn a_ball_lies_out_of_in_or_across_a_region() {
+        // The cone x > 0 and y > 0 (sides through the eye), beyond the plane z = -5.
+        let region = Region {
+            sides: vec![
+                Vector4::new(2.0, 0.0, 0.0, 0.0),
+                Vector4::new(0.0, 1.0, 0.0, 0.0),
+            ],
+            plane: Some(Vector4::new(0.0, 0.0, -1.0, -5.0)),
+        };
+        let at = |x: Real, y: Real, z: Real| Vector4::new(x, y, z, 1.0);
+        assert_eq!(region.ball(&at(3.0, 3.0, -10.0), 1.0, 0.0), Side::In);
+        assert_eq!(region.ball(&at(0.5, 3.0, -10.0), 1.0, 0.0), Side::Across);
+        assert_eq!(region.ball(&at(-2.0, 3.0, -10.0), 1.0, 0.0), Side::Out);
+        assert_eq!(
+            region.ball(&at(3.0, 3.0, -3.0), 1.0, 0.0),
+            Side::Out,
+            "before the mouth"
+        );
+        assert_eq!(
+            region.ball(&at(-1.1, 3.0, -10.0), 1.0, 0.2),
+            Side::Across,
+            "the slack"
+        );
+        assert_eq!(
+            Region::default().ball(&at(0.0, 0.0, 0.0), 1.0, 0.0),
+            Side::In
+        );
+        // A view drops a ball out of its region or in one of its cuts.
+        let view = PortalView::<E3> {
+            eye: fk_geometry::GroupElement::identity(),
+            realm: Realm::MAIN,
+            depth: 1,
+            parent: Some(0),
+            region: region.clone(),
+            cuts: vec![Region {
+                sides: vec![Vector4::new(1.0, 0.0, 0.0, -10.0)],
+                plane: None,
+            }],
+            part: [-1.0, -1.0, 1.0, 1.0],
+            pixels: 1.0,
+            shadows: true,
+            far: None,
+        };
+        assert!(!view.drops(&at(3.0, 3.0, -10.0), 1.0));
+        assert!(view.drops(&at(-3.0, 3.0, -10.0), 1.0), "out of the region");
+        assert!(view.drops(&at(20.0, 3.0, -10.0), 1.0), "in the cut x > 10");
+        assert!(!view.drops(&at(10.5, 3.0, -10.0), 1.0), "across the cut");
     }
 
     #[test]

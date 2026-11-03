@@ -1975,6 +1975,7 @@ fn sdf_color(q: vec3<f32>) -> vec3<f32> {
             portal: None,
             realm: fk_scene::Realm::MAIN,
             clipped: false,
+            kept: None,
         };
         let size = WindowSize {
             width,

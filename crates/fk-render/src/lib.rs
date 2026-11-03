@@ -142,7 +142,8 @@ pub use offscreen::{Image, Offscreen, Paths};
 pub use overlay::Overlay;
 pub use parting::{MAX_PARTINGS, Part, Parting, SeeThrough};
 pub use portal::{
-    MAX_PORTAL_CUTS, MAX_PORTAL_FORMS, PortalBudget, PortalView, PortalViews, RealmLighting, Region,
+    MAX_PORTAL_CUTS, MAX_PORTAL_FORMS, PortalBudget, PortalView, PortalViews, RealmLighting,
+    Region, Side,
 };
 pub use quotient::{QuotientView, Unrepeated};
 pub use raster::RasterPipeline;
