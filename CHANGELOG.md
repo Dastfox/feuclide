@@ -9,6 +9,10 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 
 ## Unreleased
 
+- fk-audio: `Audio::stream`, a sound made as it plays (the app fills each block of frames on
+  the audio thread until its `Stream` is dropped); `Sound::rate` and `Sound::frames`, a clip's
+  samples for code that plays it itself.
+
 ## 2026-11-03
 
 fk-app 0.3.0, fk-audio 0.3.0, fk-scene 0.3.0, fk-quotient 0.3.0, fk-physics 0.3.0, fk-shaders 0.2.0,

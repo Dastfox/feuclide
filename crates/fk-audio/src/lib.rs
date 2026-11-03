@@ -25,12 +25,17 @@
 //! the channels no meaning: a game sorts its sounds into them (its world, its player's body)
 //! for the player to set apart.
 //!
+//! A sound may also be made as it plays ([`Audio::stream`]): the app's own code fills each block
+//! of frames on the audio thread (a synthesizer, a music engine), until its [`Stream`] is
+//! dropped.
+//!
 //! Gains are amplitudes: 1 unchanged, 0 silent, above 1 louder ([`decibels`] converts). Rates are
 //! playback speeds: 1 unchanged, and the pitch follows. Fades are in seconds. The backend is
 //! `kira`; nothing of it shows through this API.
 
 use std::io::Cursor;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bevy_ecs::prelude::*;
@@ -413,6 +418,45 @@ impl Audio {
         Voice::from(played)
     }
 
+    /// Starts a sound made as it plays: `fill` writes each block of stereo frames (`[left,
+    /// right]`, −1 to 1) on the audio thread, the second argument the seconds a frame lasts, in
+    /// `channel`, in its room if `room`; it plays until the [`Stream`] is dropped. Without a
+    /// device nothing is ever asked of `fill`.
+    pub fn stream(
+        &self,
+        fill: impl FnMut(&mut [[f32; 2]], Real) + Send + 'static,
+        channel: Channel,
+        room: bool,
+    ) -> Stream {
+        let stop = Arc::new(AtomicBool::new(false));
+        let Some(output) = &self.output else {
+            return Stream { stop };
+        };
+        let data = StreamData {
+            fill: Box::new(fill),
+            stop: stop.clone(),
+        };
+        let mut output = output
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(Tracks {
+            track,
+            room: in_room,
+            ..
+        }) = output.channel(channel)
+        else {
+            return Stream { stop };
+        };
+        let played = match in_room {
+            Some((in_room, _)) if room => in_room.play(data),
+            _ => track.play(data),
+        };
+        if let Err(error) = played {
+            tracing::warn!("cannot play a stream: {error}");
+        }
+        Stream { stop }
+    }
+
     /// A place to play sounds from, outside in channel 0, at `at` about the ear (x to the right, y up, −z
     /// ahead): heard fully within `near` and fading out to nothing at `far`, in the same units.
     /// Silent without a device or an ear.
@@ -615,6 +659,80 @@ impl Sound {
     /// Its length in seconds, at rate 1.
     pub fn duration(&self) -> Real {
         self.data.duration().as_secs_f64()
+    }
+
+    /// Its frames a second.
+    pub fn rate(&self) -> u32 {
+        self.data.sample_rate
+    }
+
+    /// Its whole clip's frames, `[left, right]` (a slice's whole clip): for code of the app's that
+    /// plays it itself ([`Audio::stream`]).
+    pub fn frames(&self) -> Vec<[f32; 2]> {
+        self.data
+            .frames
+            .iter()
+            .map(|frame| [frame.left, frame.right])
+            .collect()
+    }
+}
+
+/// A sound made as it plays ([`Audio::stream`]): it stops when this is dropped.
+#[derive(Debug)]
+pub struct Stream {
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// What fills a stream's blocks ([`Audio::stream`]).
+type Fill = Box<dyn FnMut(&mut [[f32; 2]], Real) + Send>;
+
+/// What [`Audio::stream`] hands the backend.
+struct StreamData {
+    fill: Fill,
+    stop: Arc<AtomicBool>,
+}
+
+impl kira::sound::SoundData for StreamData {
+    type Error = std::convert::Infallible;
+    type Handle = ();
+
+    fn into_sound(self) -> Result<(Box<dyn kira::sound::Sound>, Self::Handle), Self::Error> {
+        Ok((
+            Box::new(StreamSound {
+                fill: self.fill,
+                stop: self.stop,
+                block: Vec::with_capacity(4096),
+            }),
+            (),
+        ))
+    }
+}
+
+/// [`StreamData`] playing: its block of frames kept between calls, so that none allocates once
+/// it is as long as the backend asks.
+struct StreamSound {
+    fill: Fill,
+    stop: Arc<AtomicBool>,
+    block: Vec<[f32; 2]>,
+}
+
+impl kira::sound::Sound for StreamSound {
+    fn process(&mut self, out: &mut [kira::Frame], dt: f64, _info: &kira::info::Info) {
+        self.block.resize(out.len(), [0.0; 2]);
+        (self.fill)(&mut self.block, dt);
+        for (frame, &[left, right]) in out.iter_mut().zip(&self.block) {
+            *frame = kira::Frame { left, right };
+        }
+    }
+
+    fn finished(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
     }
 }
 
@@ -820,5 +938,34 @@ mod tests {
         voice.set_gain(0.5, 1.0);
         voice.stop(0.0);
         assert!(!voice.is_playing());
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    /// Silent, a stream asks nothing of its fill and stops when dropped; a made clip gives its
+    /// frames back.
+    #[test]
+    fn a_stream_without_a_device_is_silent_and_a_clip_gives_its_frames() {
+        let audio = Audio::silent();
+        let asked = Arc::new(AtomicBool::new(false));
+        let flag = asked.clone();
+        let stream = audio.stream(
+            move |out: &mut [[f32; 2]], _| {
+                flag.store(true, Ordering::Relaxed);
+                out.fill([0.0; 2]);
+            },
+            Channel(0),
+            false,
+        );
+        let stop = stream.stop.clone();
+        drop(stream);
+        assert!(stop.load(Ordering::Relaxed));
+        assert!(!asked.load(Ordering::Relaxed));
+        let clip = Sound::from_samples(1000, &[[0.5, -0.5], [0.25, 0.0]]);
+        assert_eq!(clip.rate(), 1000);
+        assert_eq!(clip.frames(), vec![[0.5, -0.5], [0.25, 0.0]]);
     }
 }
