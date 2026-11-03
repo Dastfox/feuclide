@@ -107,7 +107,7 @@ struct Lighting {
     // x: share of the map's half-width where shadows start fading out towards its edge.
     shadow_fade: vec4<f32>,
     // The point lights nearest the eye; x of `point_count` says how many are used.
-    point_lights: array<PointLight, 8>,
+    point_lights: array<PointLight, 32>,
     point_count: vec4<f32>,
     // More bodies in the sky, drawn as the sun and the moon are; x of `disc_count` says how
     // many are used.

@@ -9,6 +9,7 @@ use bevy_ecs::query::{Has, QueryState, With, Without};
 use bevy_ecs::world::World;
 use bytemuck::{Pod, Zeroable};
 use fk_geometry::{Geometry, GpuGeometry, GroupElement};
+use fk_math::Real;
 use fk_scene::{GlobalRealm, Realm, ViewRelative};
 use wgpu::util::DeviceExt;
 
@@ -30,6 +31,24 @@ struct GpuInstance {
     iso: [[f32; 4]; 4],
     color: [f32; 4],
     data: [f32; 4],
+    /// Which of the frame's point lights reach its bounding ball, bit `i` the lighting block's
+    /// light `i`: the others give nothing on any fragment of it.
+    lights: u32,
+}
+
+/// Every light: the ray marcher's, and wherever a mask is not worked out.
+const ALL_LIGHTS: u32 = u32::MAX;
+
+/// Which of `lights` (where each is and how far it reaches, at most 32) reach the ball of
+/// `radius` about `centre`, bit `i` light `i`, with a hair of slack for the fragments' f32: a
+/// light left out is past its range at every point of the ball, where it gives exactly nothing.
+fn light_mask<G: Geometry>(lights: &[(G::Point, Real)], centre: &G::Point, radius: Real) -> u32 {
+    lights
+        .iter()
+        .take(32)
+        .enumerate()
+        .filter(|(_, (at, range))| G::distance(centre, at) < radius + range * (1.0 + 1e-4) + 1e-4)
+        .fold(0, |mask, (i, _)| mask | (1 << i))
 }
 
 struct GpuMesh<G: Geometry> {
@@ -318,6 +337,9 @@ pub struct RasterPipeline<G: GpuGeometry> {
     pipelines: Vec<Option<Pipelines>>,
     /// By slot, how far its vertex stage may move a vertex: nothing for the engine's.
     reaches: Vec<Reach>,
+    /// The point lights the view last prepared is lit by, where they are relative to its eye and
+    /// how far they reach, in the lighting block's order.
+    lights: Vec<(G::Point, Real)>,
     meshes: Vec<GpuMesh<G>>,
     query: Option<QueryState<Drawables<G>, Without<Hidden>>>,
     see_through_query: Option<SeeThroughQuery>,
@@ -394,6 +416,7 @@ impl<G: GpuGeometry> RasterPipeline<G> {
                 metres: 0.0,
                 of_height: 0.0,
             }],
+            lights: Vec::new(),
             meshes: Vec::new(),
             query: None,
             see_through_query: None,
@@ -582,7 +605,7 @@ impl Builder {
         let vertex_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Uint8x4];
         let instance_attributes = wgpu::vertex_attr_array![
             2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-            6 => Float32x4, 7 => Float32x4,
+            6 => Float32x4, 7 => Float32x4, 11 => Uint32,
         ];
         let buffers = vertex_layouts(&vertex_attributes, &instance_attributes);
         self.device
@@ -631,7 +654,7 @@ impl Builder {
         let vertex_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Uint8x4];
         let instance_attributes = wgpu::vertex_attr_array![
             2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-            6 => Float32x4, 7 => Float32x4,
+            6 => Float32x4, 7 => Float32x4, 11 => Uint32,
         ];
         let buffers = vertex_layouts(&vertex_attributes, &instance_attributes);
         self.device
@@ -689,7 +712,7 @@ impl Builder {
         let vertex_attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Uint8x4];
         let instance_attributes = wgpu::vertex_attr_array![
             2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-            6 => Float32x4, 7 => Float32x4,
+            6 => Float32x4, 7 => Float32x4, 11 => Uint32,
         ];
         let buffers = vertex_layouts(&vertex_attributes, &instance_attributes);
         let opaque = self.painted(label, &shader, "fragment");
@@ -774,6 +797,13 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
 
     fn prepare(&mut self, gpu: &Gpu, world: &mut World, view: &FrameView<'_, G>) {
         self.warm(gpu, world);
+        // The same choice as the lighting block's for this view.
+        self.lights.clear();
+        self.lights.extend(
+            crate::graph::chosen_lights::<G>(world, Some(view.view))
+                .into_iter()
+                .map(|chosen| (chosen.at, chosen.light.range)),
+        );
         // In a quotient, each deck translate `γ` made relative to the eye drawing, `D⁻¹ ∘ γ ∘ D`:
         // what carries a pose relative to that eye to its copy's.
         let eye = view.view.eye.isometry;
@@ -921,11 +951,19 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
             if !seen && !casts && !far_seen {
                 continue;
             }
+            // The lights whose range reaches its ball, a hair of slack for the fragments' f32;
+            // every light on a sphere, where it is also seen the long way round.
+            let lights = if antipode.is_some() {
+                ALL_LIGHTS
+            } else {
+                light_mask::<G>(&self.lights, &centre, radius)
+            };
             // The colour's alpha is the image's alpha on the surface, 1 at least.
             let mut instance = GpuInstance {
                 iso: matrix_columns(&G::isometry_matrix(&candidate.relative)),
                 color: candidate.color,
                 data: candidate.data,
+                lights,
             };
             instance.color[3] = instance.color[3].max(1.0);
             let key = (candidate.slot, candidate.see_through, candidate.mesh);
@@ -1094,6 +1132,23 @@ mod tests {
         pipeline.prepare(gpu, world, &view);
         pipeline.queue(gpu, &view);
         pipeline.stats().culled
+    }
+
+    #[test]
+    fn an_instance_is_lit_by_the_lights_that_reach_its_ball_only() {
+        use fk_math::nalgebra::Point3;
+        let lights = [
+            (Point3::new(0.0, 0.0, -5.0), 3.0),
+            (Point3::new(0.0, 0.0, -20.0), 3.0),
+            (Point3::new(4.0, 0.0, -10.0), 3.5),
+        ];
+        let centre = Point3::new(0.0, 0.0, -10.0);
+        // 5 away and reaching 3 + 1: short; 10 away: out; 4 away reaching 3.5 + 1: in.
+        assert_eq!(light_mask::<E3>(&lights, &centre, 1.0), 0b100);
+        assert_eq!(light_mask::<E3>(&lights, &centre, 2.5), 0b101);
+        assert_eq!(light_mask::<E3>(&lights, &centre, 8.0), 0b111);
+        // Touching: in, with the slack.
+        assert_eq!(light_mask::<E3>(&lights[..1], &centre, 2.0), 0b1);
     }
 
     #[test]

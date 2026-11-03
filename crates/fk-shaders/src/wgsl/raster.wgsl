@@ -15,7 +15,7 @@
 }
 #import fk::sky::sky_haze
 #import fk::portal::portal_keeps
-#import fk::paint::{banded, point_lights}
+#import fk::paint::{banded, point_lights_in}
 #import fk::displace::Shaped
 #import fk::deform::deform
 #import fk::shadow::{shadow_coords, shadow_light}
@@ -51,6 +51,8 @@ struct Vertex {
     @location(9) tangent: vec4<f32>,
     // What the colour is multiplied by at this vertex, in 128ths: 128 leaves it as it is.
     @location(10) shade: vec4<u32>,
+    // Which point lights reach the instance (bit `i` light `i`).
+    @location(11) lights: u32,
 }
 
 struct Varyings {
@@ -65,6 +67,7 @@ struct Varyings {
     @location(6) side: f32,
     // The vertex as the mesh has it, before the deform: where the parting's edge strays.
     @location(7) model: vec3<f32>,
+    @location(8) @interpolate(flat) lights: u32,
 }
 
 fn instance_iso(in: Vertex) -> mat4x4<f32> {
@@ -94,6 +97,7 @@ fn vertex(in: Vertex) -> Varyings {
     out.color = vec4<f32>(in.color.rgb * vec3<f32>(in.shade.rgb) / 128.0, in.color.w);
     out.haze = shaped.haze;
     out.model = in.position.xyz;
+    out.lights = in.lights;
     return out;
 }
 
@@ -231,7 +235,7 @@ fn paint(in: Varyings) -> vec4<f32> {
         shadow = shadow_light(p, n.xyz * inverseSqrt(max(dot(n.xyz, n.xyz), 1e-12)));
     }
     let light = mix(lighting.shadow_tint.rgb, lighting.sun_color.rgb, sunlit * shadow);
-    let lit = in.color.rgb * tone * (light + point_lights(p, n));
+    let lit = in.color.rgb * tone * (light + point_lights_in(p, n, in.lights));
 
     // Fade fully into the sky before the far surface, so culling there is invisible. The fog
     // takes the colour of the sky behind the surface, glows included; a deformed vertex can

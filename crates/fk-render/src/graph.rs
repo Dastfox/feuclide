@@ -1831,18 +1831,26 @@ fn in_eye_frame<G: GpuGeometry>(view: &ActiveView<G>, direction: &Vector3<Real>)
     Vector3::from_fn(|i, _| G::inner(&origin, &at_eye, &G::origin_frame(i)))
 }
 
-/// The point lights of the eye's realm that reach nearest the eye, made relative to it in f64
-/// (`eye⁻¹ ∘ light`), and how many there are.
-fn point_lights<G: GpuGeometry>(
+/// A point light chosen for a view: where it is relative to the view's eye, the light, and its
+/// spot's axis there with the spot.
+pub(crate) struct ChosenLight<G: GpuGeometry> {
+    pub at: G::Point,
+    pub light: PointLight,
+    pub spot: Option<(fk_math::nalgebra::Vector4<Real>, Spot)>,
+}
+
+/// The point lights of the eye's realm that reach nearest the eye, at most
+/// [`MAX_POINT_LIGHTS`], made relative to it in f64 (`eye⁻¹ ∘ light`), in the order the
+/// lighting block holds them: the raster's masks are read against the same choice.
+pub(crate) fn chosen_lights<G: GpuGeometry>(
     world: &World,
     view: Option<&ActiveView<G>>,
-) -> ([PointLightBlock; MAX_POINT_LIGHTS], usize) {
-    let mut blocks = [PointLightBlock::default(); MAX_POINT_LIGHTS];
+) -> Vec<ChosenLight<G>> {
     let (Some(view), Some(mut query)) = (
         view,
         world.try_query::<(Entity, &fk_scene::GlobalPose<G>, &PointLight)>(),
     ) else {
-        return (blocks, 0);
+        return Vec::new();
     };
     let origin = G::origin();
     let to_eye = view.eye.isometry.inverse();
@@ -1868,8 +1876,22 @@ fn point_lights<G: GpuGeometry>(
         })
         .collect();
     lights.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let count = lights.len().min(MAX_POINT_LIGHTS);
-    for (block, (_, at, light, spot)) in blocks.iter_mut().zip(lights) {
+    lights
+        .into_iter()
+        .take(MAX_POINT_LIGHTS)
+        .map(|(_, at, light, spot)| ChosenLight { at, light, spot })
+        .collect()
+}
+
+/// The lighting block's point lights, [`chosen_lights`], and how many there are.
+fn point_lights<G: GpuGeometry>(
+    world: &World,
+    view: Option<&ActiveView<G>>,
+) -> ([PointLightBlock; MAX_POINT_LIGHTS], usize) {
+    let mut blocks = [PointLightBlock::default(); MAX_POINT_LIGHTS];
+    let chosen = chosen_lights(world, view);
+    let count = chosen.len();
+    for (block, ChosenLight { at, light, spot }) in blocks.iter_mut().zip(chosen) {
         let (cones, direction) = match spot {
             Some((axis, spot)) => (
                 [spot.inner.cos() as f32, spot.outer.cos() as f32],

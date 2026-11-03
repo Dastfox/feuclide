@@ -17,10 +17,19 @@ fn banded(light: f32) -> f32 {
 // painted in bands like the sun's: each light's colour times the banded share of it that
 // reaches, after the geometry's falloff, the fade at its range and, for a spot, its cone.
 fn point_lights(p: vec4<f32>, n: vec4<f32>) -> vec3<f32> {
+    return point_lights_in(p, n, 0xffffffffu);
+}
+
+// The same, of the lights whose bit is set in `mask` only (bit `i` light `i`), in the same
+// order: those an instance's ball lies wholly out of the range of give nothing there anyway.
+fn point_lights_in(p: vec4<f32>, n: vec4<f32>, mask: u32) -> vec3<f32> {
     var sum = vec3<f32>(0.0);
     let count = u32(lighting.point_count.x);
     let nn = inverseSqrt(max(geo_inner(p, n, n), 1e-12));
-    for (var i = 0u; i < count; i++) {
+    var bits = mask & select((1u << count) - 1u, 0xffffffffu, count >= 32u);
+    while bits != 0u {
+        let i = firstTrailingBit(bits);
+        bits &= bits - 1u;
         let light = lighting.point_lights[i];
         let d = geo_distance(p, light.position);
         let range = light.shape.y;

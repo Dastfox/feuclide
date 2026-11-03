@@ -14,8 +14,10 @@ use fk_math::Real;
 
 use crate::Color;
 
-/// Most point lights drawn in one frame: the nearest to the eye.
-pub const MAX_POINT_LIGHTS: usize = 8;
+/// Most point lights drawn in one frame: the nearest to the eye. Each instance drawn is lit by
+/// those of them whose range reaches its bounding ball only, so a frame pays for a light only
+/// where it falls.
+pub const MAX_POINT_LIGHTS: usize = 32;
 
 /// A light at the origin of its entity's frame (its `GlobalPose`), shining every way.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
