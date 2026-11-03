@@ -32,11 +32,15 @@ struct GpuInstance {
     data: [f32; 4],
 }
 
-struct GpuMesh {
+struct GpuMesh<G: Geometry> {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     index_count: u32,
+    /// The ball about the origin, for instances through a deform.
     radius: f64,
+    /// The tight ball's centre, embedded, and its radius, for instances drawn as built.
+    centre: G::Point,
+    tight: f64,
 }
 
 /// A candidate for drawing: an instance made camera-relative, not yet culled.
@@ -310,7 +314,7 @@ pub struct RasterPipeline<G: GpuGeometry> {
     window: wgpu::RenderPipeline,
     /// By slot; `None` for a deform that did not compile, drawn as built instead.
     pipelines: Vec<Option<Pipelines>>,
-    meshes: Vec<GpuMesh>,
+    meshes: Vec<GpuMesh<G>>,
     query: Option<QueryState<Drawables<G>, Without<Hidden>>>,
     see_through_query: Option<SeeThroughQuery>,
     candidates: Vec<Candidate<G>>,
@@ -423,6 +427,8 @@ impl<G: GpuGeometry> RasterPipeline<G> {
                 ),
                 index_count: u32::try_from(mesh.indices.len()).expect("mesh too large"),
                 radius: mesh.radius,
+                centre: G::exp(&G::origin(), &crate::tangent::<G>(&mesh.ball.centre)),
+                tight: mesh.ball.radius,
             });
         }
     }
@@ -862,15 +868,20 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
             let Some(mesh) = self.meshes.get(candidate.mesh as usize) else {
                 continue;
             };
-            let centre = G::apply(&candidate.relative, &origin);
-            let seen = view.frustum.sees::<G>(&centre, mesh.radius);
+            // Drawn as built, by the mesh's tight ball; through a deform, which may move its
+            // vertices anywhere, by the ball about its origin.
+            let (centre, radius) = if candidate.slot == 0 {
+                (G::apply(&candidate.relative, &mesh.centre), mesh.tight)
+            } else {
+                (G::apply(&candidate.relative, &origin), mesh.radius)
+            };
+            let seen = view.frustum.sees::<G>(&centre, radius);
             // Cast into the map, and only where its shadow can fall in view.
             let casts = candidate.casts
                 && view
                     .shadow
-                    .is_some_and(|shadow| shadow.sees::<G>(&centre, mesh.radius))
-                && along
-                    .is_some_and(|along| view.frustum.sees_cast::<G>(&centre, mesh.radius, &along));
+                    .is_some_and(|shadow| shadow.sees::<G>(&centre, radius))
+                && along.is_some_and(|along| view.frustum.sees_cast::<G>(&centre, radius, &along));
             if !seen {
                 stats.culled += 1;
             }
@@ -883,10 +894,9 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                 };
                 let d = G::norm(&origin, &towards);
                 d <= 1e-12
-                    || view.frustum.sees::<G>(
-                        &G::exp(&origin, &(towards * (-(round - d) / d))),
-                        mesh.radius,
-                    )
+                    || view
+                        .frustum
+                        .sees::<G>(&G::exp(&origin, &(towards * (-(round - d) / d))), radius)
             });
             if !seen && !casts && !far_seen {
                 continue;

@@ -39,7 +39,21 @@ pub struct Mesh {
     pub vertices: Vec<Vertex>,
     /// Three indices per triangle, counter-clockwise seen from the side the normals point to.
     pub indices: Vec<u32>,
-    /// Geodesic radius of a ball about the origin that holds every vertex, for culling.
+    /// Geodesic radius of a ball about the origin that holds every vertex: what an instance
+    /// whose [`DeformShader`](crate::DeformShader) may move its vertices is culled by.
+    pub radius: Real,
+    /// The smallest ball found about the middle of the mesh that holds every vertex: what an
+    /// instance drawn as built is culled by.
+    pub ball: MeshBall,
+}
+
+/// A geodesic ball that holds every vertex of a [`Mesh`], about a point of the mesh's own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MeshBall {
+    /// Its centre, as the tangent vector at the origin it is `exp` of, in coordinates of the
+    /// reference frame (as the mesh was authored): the middle of the mesh's bounding box.
+    pub centre: Vector3<Real>,
+    /// Its geodesic radius.
     pub radius: Real,
 }
 
@@ -249,6 +263,21 @@ impl MeshBuilder {
         );
         let origin = G::origin();
         let mut radius: Real = 0.0;
+        // The middle of the bounding box, where the tight ball is centred.
+        let (low, high) = self.positions.iter().fold(
+            (
+                Vector3::repeat(Real::INFINITY),
+                Vector3::repeat(Real::NEG_INFINITY),
+            ),
+            |(low, high), p| (low.inf(p), high.sup(p)),
+        );
+        let middle = if self.positions.is_empty() {
+            Vector3::zeros()
+        } else {
+            (low + high) / 2.0
+        };
+        let centre = G::exp(&origin, &tangent::<G>(&middle));
+        let mut about_centre: Real = 0.0;
         let maps: Vec<Option<NormalMap>> = self.maps().collect();
         let tangents = maps.iter().any(Option::is_some).then(|| self.tangents());
         let vertices = self
@@ -265,6 +294,7 @@ impl MeshBuilder {
                     Vec4f::from_real(&G::embed_tangent(&point, &v))
                 };
                 radius = radius.max(G::distance(&origin, &point));
+                about_centre = about_centre.max(G::distance(&centre, &point));
                 let (along, sign) = match (&tangents, maps[i]) {
                     (Some(tangents), Some(_)) => (Some(tangents[i].0), tangents[i].1),
                     _ => (None, 1.0),
@@ -292,6 +322,10 @@ impl MeshBuilder {
             vertices,
             indices: self.indices.clone(),
             radius,
+            ball: MeshBall {
+                centre: middle,
+                radius: about_centre,
+            },
         }
     }
 }
@@ -451,6 +485,53 @@ mod tests {
             "its own map stays"
         );
         assert_eq!(laid.vertices[none as usize].uv.0[2], 1.0, "the mesh's map");
+    }
+
+    /// A unit cube `at` from the origin.
+    fn cube_at(at: Vector3<Real>) -> MeshBuilder {
+        let mut mesh = MeshBuilder::new();
+        for corner in 0..8 {
+            let c = Vector3::new(
+                (corner & 1) as Real,
+                ((corner >> 1) & 1) as Real,
+                ((corner >> 2) & 1) as Real,
+            );
+            mesh.vertex(at + c, Vector3::z());
+        }
+        mesh.triangle(0, 1, 2);
+        mesh
+    }
+
+    #[test]
+    fn the_tight_ball_holds_every_vertex_about_the_meshes_middle() {
+        use fk_geometry_euclidean::E3;
+        use fk_geometry_hyperbolic::H3;
+        use fk_geometry_spherical::S3;
+        let at = Vector3::new(30.0, 0.0, -120.0);
+        let built = cube_at(at).build::<E3>();
+        assert!((built.ball.centre - (at + Vector3::repeat(0.5))).norm() < 1e-12);
+        let half_diagonal = 3.0_f64.sqrt() / 2.0;
+        assert!((built.ball.radius - half_diagonal).abs() < 1e-12);
+        assert!(built.radius > 120.0, "the origin's ball still reaches it");
+        // In curved space too, every vertex within the radius of the embedded centre.
+        fn holds<G: GpuGeometry>(at: Vector3<Real>) {
+            let mesh = cube_at(at);
+            let built = mesh.build::<G>();
+            let origin = G::origin();
+            let centre = G::exp(&origin, &tangent::<G>(&built.ball.centre));
+            for p in mesh.positions() {
+                let point = G::exp(&origin, &tangent::<G>(p));
+                assert!(G::distance(&centre, &point) <= built.ball.radius + 1e-12);
+            }
+            assert!(built.ball.radius <= built.radius + 1e-12);
+        }
+        holds::<H3>(Vector3::new(0.5, 0.2, -1.0));
+        holds::<S3>(Vector3::new(0.3, -0.2, -0.8));
+        let empty = MeshBuilder::new().build::<E3>();
+        assert_eq!(
+            (empty.ball.centre, empty.ball.radius),
+            (Vector3::zeros(), 0.0)
+        );
     }
 
     struct NormalMapsForTest(crate::NormalMaps);

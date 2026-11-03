@@ -132,7 +132,9 @@ pub use light::{MAX_POINT_LIGHTS, PointLight, Spot};
 pub use march::{
     FieldsBuilt, RayMarchPipeline, RayMarched, RayMarching, SDF_PARAMS, SdfHandle, SdfShader, Sdfs,
 };
-pub use mesh::{Instance, Mesh, MeshBuilder, MeshHandle, MeshInstances, Meshes, Vertex, tangent};
+pub use mesh::{
+    Instance, Mesh, MeshBall, MeshBuilder, MeshHandle, MeshInstances, Meshes, Vertex, tangent,
+};
 pub use normal_map::{
     NormalMap, NormalMaps, TONE_ONE, axis, box_uv, heights_to_normals, heights_to_texels, tone_byte,
 };
