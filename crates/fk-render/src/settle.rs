@@ -21,11 +21,11 @@ const JITTERS: u32 = 17;
 
 /// One of the two pairs of targets: what the pass draws into one frame and reads the next.
 struct Pair {
-    color: wgpu::Texture,
     color_view: wgpu::TextureView,
     distance_view: wgpu::TextureView,
-    /// Reading this pair as the last image, with the colour and depth targets.
-    reading: wgpu::BindGroup,
+    /// Reading this pair as the last image, with the depth and each of the frame's two images
+    /// (by which holds the image).
+    reading: [wgpu::BindGroup; 2],
 }
 
 pub(crate) struct SettlePass {
@@ -34,6 +34,8 @@ pub(crate) struct SettlePass {
     uniform: wgpu::Buffer,
     sampler: wgpu::Sampler,
     pairs: Option<[Pair; 2]>,
+    /// Drawing into each of the frame's two images: the settled image goes into the other.
+    images: Option<[wgpu::TextureView; 2]>,
     /// The pair drawn into this frame; the other is the last image.
     drawn: usize,
     /// Whether the other pair holds the last frame's image.
@@ -125,7 +127,11 @@ impl SettlePass {
                 module: &shader,
                 entry_point: Some("fragment"),
                 compilation_options: Default::default(),
-                targets: &[Some(color_format.into()), Some(DISTANCE_FORMAT.into())],
+                targets: &[
+                    Some(color_format.into()),
+                    Some(DISTANCE_FORMAT.into()),
+                    Some(color_format.into()),
+                ],
             }),
             multiview_mask: None,
             cache: None,
@@ -149,6 +155,7 @@ impl SettlePass {
             uniform,
             sampler,
             pairs: None,
+            images: None,
             drawn: 0,
             last: false,
             on: false,
@@ -156,8 +163,15 @@ impl SettlePass {
         }
     }
 
-    /// Points the pass at new targets, after a resize: the last image is gone.
-    pub fn set_targets(&mut self, gpu: &Gpu, color: &wgpu::Texture, depth: &wgpu::TextureView) {
+    /// Points the pass at new targets (the frame's two images), after a resize: the last image
+    /// is gone.
+    pub fn set_targets(
+        &mut self,
+        gpu: &Gpu,
+        images: [&wgpu::Texture; 2],
+        depth: &wgpu::TextureView,
+    ) {
+        let color = images[0];
         let make = |label| {
             let texture = |format, usage| {
                 gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -173,54 +187,56 @@ impl SettlePass {
                     view_formats: &[],
                 })
             };
-            let colour = texture(color.format(), wgpu::TextureUsages::COPY_SRC);
+            let colour = texture(color.format(), wgpu::TextureUsages::empty());
             let distance = texture(DISTANCE_FORMAT, wgpu::TextureUsages::empty());
             (colour, distance)
         };
         let (a, a_distance) = make("fk settle a");
         let (b, b_distance) = make("fk settle b");
-        let scene = color.create_view(&Default::default());
+        let scenes = images.map(|image| image.create_view(&Default::default()));
         let pair = |colour: wgpu::Texture, distance: wgpu::Texture| {
             let color_view = colour.create_view(&Default::default());
             let distance_view = distance.create_view(&Default::default());
-            let reading = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("fk settle"),
-                layout: &self.layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&scene),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(depth),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self.uniform.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(&color_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(&distance_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                ],
-            });
+            let reading = |scene: &wgpu::TextureView| {
+                gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("fk settle"),
+                    layout: &self.layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(scene),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(depth),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: self.uniform.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::TextureView(&color_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: wgpu::BindingResource::TextureView(&distance_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 5,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                    ],
+                })
+            };
             Pair {
-                color: colour,
+                reading: [reading(&scenes[0]), reading(&scenes[1])],
                 color_view,
                 distance_view,
-                reading,
             }
         };
         self.pairs = Some([pair(a, a_distance), pair(b, b_distance)]);
+        self.images = Some(scenes);
         self.last = false;
     }
 
@@ -243,19 +259,19 @@ impl SettlePass {
         [halton(i, 2) - 0.5, halton(i, 3) - 0.5]
     }
 
-    /// Settles the colour target, after the opaque pass and before the image effects. Does nothing while the
-    /// image does not settle.
+    /// Settles the frame's image, held by its image `side`, into the other: whether it did
+    /// (nothing while the image does not settle).
     pub fn render(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
-        color: &wgpu::Texture,
+        side: usize,
         frame: &wgpu::BindGroup,
-    ) {
-        let Some(pairs) = &self.pairs else {
-            return;
+    ) -> bool {
+        let (Some(pairs), Some(images)) = (&self.pairs, &self.images) else {
+            return false;
         };
         if !self.on {
-            return;
+            return false;
         }
         let (drawn, last) = (&pairs[self.drawn], &pairs[1 - self.drawn]);
         {
@@ -272,21 +288,21 @@ impl SettlePass {
             };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("fk settle"),
-                color_attachments: &[target(&drawn.color_view), target(&drawn.distance_view)],
+                color_attachments: &[
+                    target(&drawn.color_view),
+                    target(&drawn.distance_view),
+                    target(&images[1 - side]),
+                ],
                 ..Default::default()
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, frame, &[]);
-            pass.set_bind_group(1, &last.reading, &[]);
+            pass.set_bind_group(1, &last.reading[side], &[]);
             pass.draw(0..3, 0..1);
         }
-        encoder.copy_texture_to_texture(
-            drawn.color.as_image_copy(),
-            color.as_image_copy(),
-            color.size(),
-        );
         self.drawn = 1 - self.drawn;
         self.last = true;
+        true
     }
 }
 

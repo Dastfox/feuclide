@@ -115,8 +115,8 @@ pub use color::Color;
 pub use cull::{Frustum, ball_on_screen};
 pub use deform::{CastsNoShadow, Deform, DeformHandle, DeformShader, Deforms, Reach};
 pub use effect::{
-    EffectFactory, EffectFrame, EffectSetup, EffectTargets, GradeShader, ImageEffect, SkyFigure,
-    add_image_effect, validate_effect,
+    Drew, EffectFactory, EffectFrame, EffectImage, EffectSetup, EffectTargets, GradeShader,
+    ImageEffect, SkyFigure, add_image_effect, validate_effect,
 };
 pub use elsewhere::{
     Elsewhere, MAX_OTHER_EYES, OtherEye, OtherEyes, SeenBy, ShowsElsewhere, ShowsOther,

@@ -111,8 +111,22 @@ struct Settled {
 // Added to the alpha of a pixel carried rather than marched: `CARRIED` in `ray_march.wgsl`.
 const CARRIED: f32 = 64.0;
 
+// The settled image, its last image for the next frame (0, 1) and the frame's image from now
+// on, drawn into the other of its two images (2): the same colour twice, so that nothing is
+// copied.
+struct SettledOut {
+    @location(0) color: vec4<f32>,
+    @location(1) distance: f32,
+    @location(2) image: vec4<f32>,
+}
+
 @fragment
-fn fragment(@builtin(position) frag: vec4<f32>) -> Settled {
+fn fragment(@builtin(position) frag: vec4<f32>) -> SettledOut {
+    let settled = settle_pixel(frag);
+    return SettledOut(settled.color, settled.distance, settled.color);
+}
+
+fn settle_pixel(frag: vec4<f32>) -> Settled {
     let pixel = vec2<i32>(frag.xy);
     var now = textureLoad(scene_color, pixel, 0);
     let carried = now.a >= CARRIED - 0.5;

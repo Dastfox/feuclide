@@ -134,22 +134,50 @@ pub struct EffectFrame {
     pub delta: f32,
 }
 
-/// The targets an [`ImageEffect`] works on: the image (resolved, one sample, its usages
-/// including texture binding and copies both ways) and its depth (reverse-Z, geodesic distance
-/// along each pixel's ray).
+/// The targets an [`ImageEffect`] works on: the frame's two images (resolved, one sample, their
+/// usages including rendering, texture binding and copies both ways), one of which holds the
+/// frame's image at any time, and their depth (reverse-Z, geodesic distance along each pixel's
+/// ray).
 pub struct EffectTargets<'a> {
-    /// The image.
-    pub color: &'a wgpu::Texture,
-    /// Its depth.
+    /// The two images.
+    pub images: [&'a wgpu::Texture; 2],
+    /// Their depth.
     pub depth: &'a wgpu::TextureView,
+}
+
+/// Where the frame's image is as an [`ImageEffect`] draws: which of the two images
+/// ([`EffectTargets::images`]) holds it, the one an effect reads, and the other, which it may
+/// draw the image into.
+#[derive(Clone, Copy, Debug)]
+pub struct EffectImage<'a> {
+    /// Which of the two images holds the frame's image, 0 or 1.
+    pub side: usize,
+    /// The image as the effects before left it: `images[side]`.
+    pub read: &'a wgpu::Texture,
+    /// The other image, free to draw into: `images[1 - side]`.
+    pub write: &'a wgpu::Texture,
+    /// Their depth.
+    pub depth: &'a wgpu::TextureView,
+}
+
+/// What an [`ImageEffect`] did with the frame's image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Drew {
+    /// Nothing, or its work on the image where it is ([`EffectImage::read`]): copied over it,
+    /// drawn over a part of it.
+    InPlace,
+    /// The whole image drawn into the other one ([`EffectImage::write`]), which holds the frame's
+    /// image from then on: nothing copied back.
+    Over,
 }
 
 /// A fullscreen pass of the caller's own over the image, after the opaque pass (and the
 /// [`Settle`](crate::Settle), unless it is [`settled`](Self::settled)) and before the post
-/// pass: an inked look, a datamosh, a crossfade. It reads the image and its depth and writes
-/// the image back (drawing into a target of its own and copying it over the image), so every
-/// later effect and the post pass read what it made. Effects run in the order they were added
-/// ([`add_image_effect`]), the settled ones first.
+/// pass: an inked look, a datamosh, a crossfade. It reads the image and its depth and draws
+/// the image anew into the other of the frame's two images ([`Drew::Over`]: no copy), or works
+/// on it where it is ([`Drew::InPlace`]), so every later effect and the post pass read what it
+/// made. Effects run in the order they were added ([`add_image_effect`]), the settled ones
+/// first.
 pub trait ImageEffect: Send + Sync + 'static {
     /// Its name, for the GPU timings of a performance recording.
     fn label(&self) -> &'static str;
@@ -168,14 +196,16 @@ pub trait ImageEffect: Send + Sync + 'static {
     /// Reads what this frame does from the world and uploads it, before anything is drawn.
     fn prepare(&mut self, gpu: &Gpu, world: &mut World, frame: &EffectFrame);
 
-    /// Records its passes over `targets`; `frame` is bind group 0. Records nothing when it has
-    /// nothing to do, so the image is exactly as without it.
+    /// Records its passes over the frame's image, as `image` says where it is; `frame` is bind
+    /// group 0. Says whether it drew the image into the other one ([`Drew::Over`]), which it
+    /// must then have drawn whole. Records nothing when it has nothing to do
+    /// ([`Drew::InPlace`]), so the image is exactly as without it.
     fn render(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
-        targets: &EffectTargets<'_>,
+        image: &EffectImage<'_>,
         frame: &wgpu::BindGroup,
-    );
+    ) -> Drew;
 }
 
 /// Builds an [`ImageEffect`] once the device exists.

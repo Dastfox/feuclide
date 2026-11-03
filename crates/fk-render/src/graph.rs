@@ -14,7 +14,8 @@ use fk_scene::{ActiveView, Realm};
 
 use crate::carried::CarriedImage;
 use crate::effect::{
-    EffectFactories, EffectFrame, EffectSetup, EffectTargets, GradeShader, ImageEffect, SkyFigure,
+    Drew, EffectFactories, EffectFrame, EffectImage, EffectSetup, EffectTargets, GradeShader,
+    ImageEffect, SkyFigure,
 };
 use crate::elsewhere::{
     Elsewhere, ElsewhereShared, ElsewhereTargets, MAX_OTHER_EYES, OtherEye, OtherEyes,
@@ -86,10 +87,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 struct Targets {
-    /// The resolved image the image effects and the post pass read.
-    color: wgpu::Texture,
-    color_view: wgpu::TextureView,
-    /// What the opaque pass draws into when multisampling, resolved into `color`.
+    /// The frame's two images: the opaque passes resolve into the first; each image effect
+    /// and the settle read the one that holds the image and may draw it anew into the other
+    /// (no copy back), and the post pass reads where it ends.
+    images: [wgpu::Texture; 2],
+    image_views: [wgpu::TextureView; 2],
+    /// What the opaque pass draws into when multisampling, resolved into `images[0]`.
     multisampled: Option<wgpu::TextureView>,
     depth: wgpu::TextureView,
     /// The layer render, read by the post pass.
@@ -525,16 +528,19 @@ impl<G: GpuGeometry> RenderState<G> {
             })
         };
         let samples = self.sample_count;
-        // The colour target is read by the post pass, copied into the captured frame on
-        // request, and read and overwritten by the settling and the image effects.
-        let color = target(
-            "fk colour",
-            COLOR_FORMAT,
-            1,
-            wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::COPY_DST,
-        );
+        // The two images are read by the post pass, copied into the captured frame on
+        // request, and read and drawn into by the settling and the image effects.
+        let image = |label| {
+            target(
+                label,
+                COLOR_FORMAT,
+                1,
+                wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
+            )
+        };
+        let images = [image("fk colour"), image("fk colour other")];
         let multisampled = (samples > 1).then(|| {
             target(
                 "fk colour samples",
@@ -577,16 +583,17 @@ impl<G: GpuGeometry> RenderState<G> {
             .create_view(&Default::default()),
         };
         let elsewhere = self.elsewhere_targets(width, height);
-        self.settle.set_targets(&self.gpu, &color, &depth);
+        let [first, second] = &images;
+        self.settle.set_targets(&self.gpu, [first, second], &depth);
         let effect_targets = EffectTargets {
-            color: &color,
+            images: [first, second],
             depth: &depth,
         };
         for effect in &mut self.effects {
             effect.set_targets(&self.gpu, &effect_targets);
         }
         self.post
-            .set_targets(&self.gpu, &color, &depth, &layer.color);
+            .set_targets(&self.gpu, [first, second], &depth, &layer.color);
         let late = self.late.as_ref().map(|resolve| LateTargets {
             depth: target(
                 "fk late depth",
@@ -598,8 +605,11 @@ impl<G: GpuGeometry> RenderState<G> {
             bind_group: resolve.bind(&self.gpu.device, &depth),
         });
         let targets = Targets {
-            color_view: color.create_view(&Default::default()),
-            color,
+            image_views: [
+                images[0].create_view(&Default::default()),
+                images[1].create_view(&Default::default()),
+            ],
+            images,
             multisampled,
             depth,
             layer,
@@ -901,9 +911,17 @@ impl<G: GpuGeometry> RenderState<G> {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("fk opaque"),
                 color_attachments: &[Some(if portals_drawn {
-                    kept_color_attachment(targets.multisampled.as_ref(), &targets.color_view, None)
+                    kept_color_attachment(
+                        targets.multisampled.as_ref(),
+                        &targets.image_views[0],
+                        None,
+                    )
                 } else {
-                    color_attachment(targets.multisampled.as_ref(), &targets.color_view, clear)
+                    color_attachment(
+                        targets.multisampled.as_ref(),
+                        &targets.image_views[0],
+                        clear,
+                    )
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &targets.depth,
@@ -945,7 +963,7 @@ impl<G: GpuGeometry> RenderState<G> {
             });
             self.discs.copy(
                 &mut encoder,
-                &targets.color,
+                &targets.images[0],
                 blocks.view.proj_scale.0,
                 [
                     Some(&lighting.sun_disc.direction),
@@ -990,20 +1008,30 @@ impl<G: GpuGeometry> RenderState<G> {
         self.timer.mark(&mut encoder, "layer");
 
         // The caller's image effects, in order: those settled with the image first, then the
-        // settling over frames, then the rest, which work on the settled image.
-        let effect_targets = EffectTargets {
-            color: &targets.color,
-            depth: &targets.depth,
-        };
+        // settling over frames, then the rest, which work on the settled image. Each that
+        // draws the image anew into the other image hands it on there: `side` holds it.
+        let mut side = 0;
         for settled in [true, false] {
             if !settled {
-                self.settle
-                    .render(&mut encoder, &targets.color, &self.frame.bind_group);
+                if self
+                    .settle
+                    .render(&mut encoder, side, &self.frame.bind_group)
+                {
+                    side = 1 - side;
+                }
                 self.timer.mark(&mut encoder, "settle");
             }
             for effect in &mut self.effects {
                 if effect.settled() == settled {
-                    effect.render(&mut encoder, &effect_targets, &self.frame.bind_group);
+                    let image = EffectImage {
+                        side,
+                        read: &targets.images[side],
+                        write: &targets.images[1 - side],
+                        depth: &targets.depth,
+                    };
+                    if effect.render(&mut encoder, &image, &self.frame.bind_group) == Drew::Over {
+                        side = 1 - side;
+                    }
                     self.timer.mark(&mut encoder, effect.label());
                 }
             }
@@ -1040,7 +1068,7 @@ impl<G: GpuGeometry> RenderState<G> {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("fk late"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &targets.color_view,
+                    view: &targets.image_views[side],
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -1071,7 +1099,8 @@ impl<G: GpuGeometry> RenderState<G> {
         self.timer.mark(&mut encoder, "late");
 
         // Post.
-        self.post.capture(&mut encoder, &targets.color, capture);
+        self.post
+            .capture(&mut encoder, &targets.images[side], capture);
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("fk post"),
@@ -1086,7 +1115,7 @@ impl<G: GpuGeometry> RenderState<G> {
                 })],
                 ..Default::default()
             });
-            self.post.render(&mut pass, &self.frame.bind_group);
+            self.post.render(&mut pass, &self.frame.bind_group, side);
         }
         self.timer.mark(&mut encoder, "post");
 
@@ -1104,7 +1133,7 @@ impl<G: GpuGeometry> RenderState<G> {
         if let Some(mut carried) = world.get_resource_mut::<CarriedImage>()
             && carried.take_request()
         {
-            let color = &targets.color;
+            let color = &targets.images[side];
             let bytes = COLOR_FORMAT.block_copy_size(None).unwrap_or(8);
             if let Some(pixels) = screenshot::read_back(&self.gpu, color, bytes, "carried image") {
                 carried.set_read(color.width(), color.height(), pixels);
@@ -1436,7 +1465,7 @@ impl<G: GpuGeometry> RenderState<G> {
                 label: Some("fk portal"),
                 color_attachments: &[Some(kept_color_attachment(
                     targets.multisampled.as_ref(),
-                    &targets.color_view,
+                    &targets.image_views[0],
                     clear,
                 ))],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {

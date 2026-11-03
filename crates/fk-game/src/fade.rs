@@ -5,7 +5,8 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::world::World;
 use fk_math::Real;
 use fk_render::{
-    CarriedImage, EffectFrame, EffectSetup, EffectTargets, Gpu, ImageEffect, uniform_bytes,
+    CarriedImage, Drew, EffectFrame, EffectImage, EffectSetup, EffectTargets, Gpu, ImageEffect,
+    uniform_bytes,
 };
 
 /// The crossfade's WGSL: the held image, the live one, and how far along.
@@ -57,13 +58,9 @@ pub struct FadePass {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     uniform: wgpu::Buffer,
-    /// The held image, what the pass draws into, and the bind group reading them.
-    targets: Option<(
-        wgpu::Texture,
-        wgpu::Texture,
-        wgpu::TextureView,
-        wgpu::BindGroup,
-    )>,
+    /// The held image, the frame's two images to draw into, and the bind groups reading the
+    /// held image and each of them.
+    targets: Option<(wgpu::Texture, [wgpu::TextureView; 2], [wgpu::BindGroup; 2])>,
     started: u32,
     /// Whether a crossfade runs, and whether this frame's image is to be held.
     running: bool,
@@ -167,11 +164,11 @@ impl ImageEffect for FadePass {
         let texture = |label, usage| {
             gpu.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
-                size: targets.color.size(),
+                size: targets.images[0].size(),
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: targets.color.format(),
+                format: targets.images[0].format(),
                 usage,
                 view_formats: &[],
             })
@@ -180,32 +177,31 @@ impl ImageEffect for FadePass {
             "fk-game fade held",
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         );
-        let drawn = texture(
-            "fk-game fade drawn",
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        );
         let view = |texture: &wgpu::Texture| texture.create_view(&Default::default());
-        let live = view(targets.color);
-        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("fk-game fade"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view(&held)),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&live),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.uniform.as_entire_binding(),
-                },
-            ],
-        });
-        let drawn_view = view(&drawn);
-        self.targets = Some((held, drawn, drawn_view, bind_group));
+        let held_view = view(&held);
+        let images = targets.images.map(view);
+        let reading = |live: &wgpu::TextureView| {
+            gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("fk-game fade"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&held_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(live),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.uniform.as_entire_binding(),
+                    },
+                ],
+            })
+        };
+        let bind_groups = [reading(&images[0]), reading(&images[1])];
+        self.targets = Some((held, images, bind_groups));
         self.running = false;
     }
 
@@ -234,29 +230,29 @@ impl ImageEffect for FadePass {
     fn render(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
-        targets: &EffectTargets<'_>,
+        image: &EffectImage<'_>,
         frame: &wgpu::BindGroup,
-    ) {
-        let Some((held, drawn, drawn_view, bind_group)) = &self.targets else {
-            return;
+    ) -> Drew {
+        let Some((held, images, bind_groups)) = &self.targets else {
+            return Drew::InPlace;
         };
         if !self.running {
-            return;
+            return Drew::InPlace;
         }
         if self.hold {
             // The first frame is the held one, as it is.
             encoder.copy_texture_to_texture(
-                targets.color.as_image_copy(),
+                image.read.as_image_copy(),
                 held.as_image_copy(),
                 held.size(),
             );
-            return;
+            return Drew::InPlace;
         }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("fk-game fade"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: drawn_view,
+                    view: &images[1 - image.side],
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -268,14 +264,10 @@ impl ImageEffect for FadePass {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, frame, &[]);
-            pass.set_bind_group(1, bind_group, &[]);
+            pass.set_bind_group(1, &bind_groups[image.side], &[]);
             pass.draw(0..3, 0..1);
         }
-        encoder.copy_texture_to_texture(
-            drawn.as_image_copy(),
-            targets.color.as_image_copy(),
-            drawn.size(),
-        );
+        Drew::Over
     }
 }
 

@@ -29,7 +29,8 @@ pub(crate) struct PostPass {
     captured: Option<wgpu::Texture>,
     /// The last [`FrameCapture::capture`] served.
     capture: u32,
-    bind_group: Option<wgpu::BindGroup>,
+    /// Reading each of the frame's two images, by which holds the image at the end.
+    bind_groups: Option<[wgpu::BindGroup; 2]>,
     encode_srgb: bool,
 }
 
@@ -206,19 +207,21 @@ impl PostPass {
             sampler,
             captured: None,
             capture: 0,
-            bind_group: None,
+            bind_groups: None,
             encode_srgb: !output.is_srgb(),
         }
     }
 
-    /// Points the pass at new targets, after a resize. The captured frame starts black.
+    /// Points the pass at new targets (the frame's two images, either of which may hold the
+    /// image at the end), after a resize. The captured frame starts black.
     pub fn set_targets(
         &mut self,
         gpu: &Gpu,
-        color: &wgpu::Texture,
+        images: [&wgpu::Texture; 2],
         depth: &wgpu::TextureView,
         layer: &wgpu::TextureView,
     ) {
+        let color = images[0];
         let captured = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("fk captured"),
             size: color.size(),
@@ -229,46 +232,49 @@ impl PostPass {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let color_view = color.create_view(&Default::default());
         let captured_view = captured.create_view(&Default::default());
-        self.bind_group = Some(gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("fk post"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&color_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(depth),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.uniform.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&captured_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(layer),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: self.text.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: self.grade.as_entire_binding(),
-                },
-            ],
-        }));
+        let reading = |image: &wgpu::Texture| {
+            let color_view = image.create_view(&Default::default());
+            gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("fk post"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&color_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(depth),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&captured_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(layer),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: self.text.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: self.grade.as_entire_binding(),
+                    },
+                ],
+            })
+        };
+        self.bind_groups = Some(images.map(reading));
         self.captured = Some(captured);
     }
 
@@ -309,8 +315,9 @@ impl PostPass {
         }
     }
 
-    pub fn render(&self, pass: &mut wgpu::RenderPass<'_>, frame: &wgpu::BindGroup) {
-        let Some(bind_group) = &self.bind_group else {
+    /// Draws the image as `images[side]` holds it into the pass's target.
+    pub fn render(&self, pass: &mut wgpu::RenderPass<'_>, frame: &wgpu::BindGroup, side: usize) {
+        let Some(bind_group) = self.bind_groups.as_ref().map(|groups| &groups[side]) else {
             return;
         };
         pass.set_pipeline(&self.pipeline);
@@ -327,7 +334,8 @@ impl PostPass {
         output: &wgpu::TextureView,
         frame: &wgpu::BindGroup,
     ) {
-        let Some(bind_group) = &self.bind_group else {
+        // It reads none of the image.
+        let Some([bind_group, _]) = &self.bind_groups else {
             return;
         };
         if self.written.is_empty() {
