@@ -105,13 +105,13 @@ pub fn grouped(reports: &[(String, DropReport)]) -> String {
     }
     let mut text = String::from("| most over | drops |\n|---|---:|\n");
     let mut causes: Vec<_> = causes.into_iter().collect();
-    causes.sort_by(|a, b| b.1.cmp(&a.1));
+    causes.sort_by_key(|cause| std::cmp::Reverse(cause.1));
     for (cause, count) in causes {
         let _ = writeln!(text, "| {cause} | {count} |");
     }
     text.push_str("\n| event in the frame | drops |\n|---|---:|\n");
     let mut events: Vec<_> = events.into_iter().collect();
-    events.sort_by(|a, b| b.1.cmp(&a.1));
+    events.sort_by_key(|event| std::cmp::Reverse(event.1));
     for (event, count) in events {
         let _ = writeln!(text, "| {event} | {count} |");
     }
