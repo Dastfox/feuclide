@@ -211,11 +211,12 @@ impl FrameWatch {
     }
 
     /// Follows the usual frame against the target's: a sag begins once it has been over long
-    /// enough, and ends once it is back under the target's.
+    /// enough, and ends once it is back at the target's (within a hundredth: the usual frame
+    /// comes back to it from above and never quite reaches it).
     fn sag(&mut self, now: Instant) {
         let usual = self.drops.usual;
         if self.drops.sagging {
-            if usual < self.sag_over / Self::SAG {
+            if usual <= self.sag_over / Self::SAG * 1.01 {
                 self.drops.sagging = false;
                 self.slow_since = None;
             }
