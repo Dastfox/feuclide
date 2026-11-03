@@ -173,7 +173,11 @@ impl App {
     }
 
     /// Runs one frame that lasted `delta` seconds, running [`Startup`] first if it has not run.
+    /// With `FK_FIXED_DELTA=<seconds>` in the environment every frame counts that long instead,
+    /// however long it took: an app then runs the same way each time, frame for frame, so that
+    /// two builds' captures can be held against each other pixel for pixel.
     pub fn update(&mut self, delta: Real) {
+        let delta = fixed_delta().unwrap_or(delta);
         self.start();
         let world = &mut self.world;
         let mut profile = FrameProfile::default();
@@ -236,6 +240,17 @@ impl Default for App {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// How long every frame counts, from `FK_FIXED_DELTA`, read once: see [`App::update`].
+fn fixed_delta() -> Option<Real> {
+    static FIXED: std::sync::OnceLock<Option<Real>> = std::sync::OnceLock::new();
+    *FIXED.get_or_init(|| {
+        std::env::var("FK_FIXED_DELTA")
+            .ok()
+            .and_then(|text| text.trim().parse::<Real>().ok())
+            .filter(|delta| *delta > 0.0 && delta.is_finite())
+    })
 }
 
 #[cfg(test)]
