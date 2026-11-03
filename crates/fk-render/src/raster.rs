@@ -12,7 +12,7 @@ use fk_geometry::{Geometry, GpuGeometry, GroupElement};
 use fk_scene::{GlobalRealm, Realm, ViewRelative};
 use wgpu::util::DeviceExt;
 
-use crate::deform::{CastsNoShadow, Deform, Deforms};
+use crate::deform::{CastsNoShadow, Deform, Deforms, Reach};
 use crate::elsewhere::{MAX_OTHER_EYES, SeenBy, ShowsElsewhere, ShowsOther};
 use crate::gpu::matrix_columns;
 use crate::mesh::{MeshInstances, Meshes, Vertex};
@@ -41,6 +41,8 @@ struct GpuMesh<G: Geometry> {
     /// The tight ball's centre, embedded, and its radius, for instances drawn as built.
     centre: G::Point,
     tight: f64,
+    /// How far it reaches from its ground, for a deform's [`Reach`](crate::Reach).
+    height: f64,
 }
 
 /// A candidate for drawing: an instance made camera-relative, not yet culled.
@@ -314,6 +316,8 @@ pub struct RasterPipeline<G: GpuGeometry> {
     window: wgpu::RenderPipeline,
     /// By slot; `None` for a deform that did not compile, drawn as built instead.
     pipelines: Vec<Option<Pipelines>>,
+    /// By slot, how far its vertex stage may move a vertex: nothing for the engine's.
+    reaches: Vec<Reach>,
     meshes: Vec<GpuMesh<G>>,
     query: Option<QueryState<Drawables<G>, Without<Hidden>>>,
     see_through_query: Option<SeeThroughQuery>,
@@ -386,6 +390,10 @@ impl<G: GpuGeometry> RasterPipeline<G> {
             normal_maps,
             window,
             pipelines: vec![Some(engine)],
+            reaches: vec![Reach::Within {
+                metres: 0.0,
+                of_height: 0.0,
+            }],
             meshes: Vec::new(),
             query: None,
             see_through_query: None,
@@ -429,6 +437,7 @@ impl<G: GpuGeometry> RasterPipeline<G> {
                 radius: mesh.radius,
                 centre: G::exp(&G::origin(), &crate::tangent::<G>(&mesh.ball.centre)),
                 tight: mesh.ball.radius,
+                height: mesh.height,
             });
         }
     }
@@ -444,6 +453,7 @@ impl<G: GpuGeometry> RasterPipeline<G> {
                 }
             };
             self.pipelines.push(pipelines);
+            self.reaches.push(shader.reach);
         }
     }
 
@@ -748,6 +758,10 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                 let new = self.pipelines.len() - before;
                 tracing::info!("{new} deforms compiled in {:.0?}", started.elapsed());
             }
+            // Their reaches as they are this frame.
+            for (reach, shader) in self.reaches[1..].iter_mut().zip(deforms.all()) {
+                *reach = shader.reach;
+            }
         }
         self.compile_see_through(world);
         if let Some(maps) = world.get_resource::<NormalMaps>() {
@@ -868,12 +882,18 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
             let Some(mesh) = self.meshes.get(candidate.mesh as usize) else {
                 continue;
             };
-            // Drawn as built, by the mesh's tight ball; through a deform, which may move its
-            // vertices anywhere, by the ball about its origin.
-            let (centre, radius) = if candidate.slot == 0 {
-                (G::apply(&candidate.relative, &mesh.centre), mesh.tight)
-            } else {
-                (G::apply(&candidate.relative, &origin), mesh.radius)
+            // By the mesh's tight ball, grown by how far its deform may move a vertex; through
+            // a deform with no bound, by the ball about its origin.
+            let grown = self
+                .reaches
+                .get(candidate.slot as usize)
+                .and_then(|reach| reach.grows_by(mesh.height));
+            let (centre, radius) = match grown {
+                Some(grown) => (
+                    G::apply(&candidate.relative, &mesh.centre),
+                    mesh.tight + grown,
+                ),
+                None => (G::apply(&candidate.relative, &origin), mesh.radius),
             };
             let seen = view.frustum.sees::<G>(&centre, radius);
             // Cast into the map, and only where its shadow can fall in view.
@@ -1026,11 +1046,115 @@ mod tests {
     use crate::march::read_buffer;
     use crate::parting::Part;
     use crate::shadow::{SHADOW_FORMAT, ShadowMap};
-    use crate::{Color, Frustum, Lighting, MeshBuilder, NormalMaps, PointLight, Spot, shapes};
+    use crate::{
+        Color, DeformShader, Frustum, Lighting, MeshBuilder, NormalMaps, PointLight, Spot, shapes,
+    };
 
     type Isometry = <E3 as Geometry>::Isometry;
 
     const SIZE: (u32, u32) = (64, 48);
+
+    /// How many instances of `world` the eye at the root's origin culls.
+    fn culled(gpu: &Gpu, world: &mut World) -> usize {
+        let (width, height) = SIZE;
+        let device = &gpu.device;
+        let frame_layout = frame_layout(device);
+        let shadow_map = ShadowMap::new(gpu);
+        let elsewhere = ElsewhereShared::new(gpu);
+        let setup = RendererSetup {
+            gpu,
+            frame_layout: &frame_layout,
+            shadow_layout: &shadow_map.layout,
+            color_format: wgpu::TextureFormat::Rgba8Unorm,
+            depth_format: wgpu::TextureFormat::Depth32Float,
+            shadow_format: SHADOW_FORMAT,
+            sample_count: 1,
+            elsewhere_layout: &elsewhere.layout,
+        };
+        let mut pipeline = RasterPipeline::<E3>::new(&setup);
+        let (fov, aspect) = (1.0, f64::from(width) / f64::from(height));
+        let eye = world.spawn_empty().id();
+        let active = ActiveView {
+            entity: eye,
+            camera: Camera::<E3>::new(fov, 0.1, 100.0),
+            eye: GlobalPose::new(Isometry::identity()),
+            realm: fk_scene::Realm::MAIN,
+        };
+        let view = FrameView {
+            view: &active,
+            aspect,
+            size: [width, height],
+            frustum: Frustum::new(fov, aspect, 100.0),
+            shadow: None,
+            elsewhere: None,
+            portal: None,
+            realm: fk_scene::Realm::MAIN,
+            clipped: false,
+        };
+        pipeline.prepare(gpu, world, &view);
+        pipeline.queue(gpu, &view);
+        pipeline.stats().culled
+    }
+
+    #[test]
+    fn instances_are_culled_by_their_meshes_own_ball_grown_by_their_deforms_reach() {
+        let Some(gpu) = Gpu::headless() else {
+            eprintln!("no adapter, skipped");
+            return;
+        };
+        // A unit cube 30 m to the right of its mesh's origin and 10 ahead: out of view, though
+        // the ball about the origin holds the eye.
+        let mut cube = MeshBuilder::new();
+        let corners: Vec<u32> = (0..8)
+            .map(|corner| {
+                let c = Vector3::new(
+                    f64::from(corner & 1),
+                    f64::from((corner >> 1) & 1),
+                    f64::from((corner >> 2) & 1),
+                );
+                cube.vertex(Vector3::new(30.0, 0.0, -10.0) + c, Vector3::z())
+            })
+            .collect();
+        cube.triangle(corners[0], corners[1], corners[2]);
+        let identity = DeformShader {
+            name: "test/identity.wgsl".to_owned(),
+            source: "#define_import_path fk::deform\n\
+                #import fk::displace::{Shaped, unshaped}\n\
+                fn deform(position: vec4<f32>, normal: vec4<f32>, iso: mat4x4<f32>, \
+                data: vec4<f32>) -> Shaped {\n    return unshaped(position, normal);\n}\n"
+                .to_owned(),
+            libraries: Vec::new(),
+            reach: Reach::Unbounded,
+        };
+        let within = |metres| Reach::Within {
+            metres,
+            of_height: 0.0,
+        };
+        for (reach, expected) in [
+            (None, 1),
+            (Some(Reach::Unbounded), 0),
+            (Some(within(5.0)), 1),
+            (Some(within(30.0)), 0),
+        ] {
+            let mut world = World::new();
+            let mut meshes = Meshes::default();
+            let mesh = meshes.add(cube.build::<E3>());
+            world.insert_resource(meshes);
+            let mut deforms = Deforms::default();
+            let handle = deforms.add(identity.clone());
+            let instances = MeshInstances::<E3>::single(mesh, Color::WHITE);
+            let entity = world
+                .spawn((ViewRelative::<E3>(Isometry::identity()), instances))
+                .id();
+            if let Some(reach) = reach {
+                deforms.set_reach(handle, reach);
+                assert_eq!(deforms.reach(handle), reach);
+                world.entity_mut(entity).insert(Deform(handle));
+            }
+            world.insert_resource(deforms);
+            assert_eq!(culled(&gpu, &mut world), expected, "{reach:?}");
+        }
+    }
 
     /// A window 4 units ahead of the eye, covering the middle of a small target, onto an image
     /// red above and blue below; read back as RGBA8.

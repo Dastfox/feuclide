@@ -43,8 +43,13 @@ pub struct Mesh {
     /// whose [`DeformShader`](crate::DeformShader) may move its vertices is culled by.
     pub radius: Real,
     /// The smallest ball found about the middle of the mesh that holds every vertex: what an
-    /// instance drawn as built is culled by.
+    /// instance drawn as built is culled by, grown by its deform's [`Reach`](crate::Reach)
+    /// for an instance through one that states it.
     pub ball: MeshBall,
+    /// How far the mesh reaches from its ground, the plane through its origin square to the
+    /// reference frame's up (`origin_frame(1)`), above or below: the furthest of its vertices'
+    /// heights as authored.
+    pub height: Real,
 }
 
 /// A geodesic ball that holds every vertex of a [`Mesh`], about a point of the mesh's own.
@@ -277,6 +282,10 @@ impl MeshBuilder {
             (low + high) / 2.0
         };
         let centre = G::exp(&origin, &tangent::<G>(&middle));
+        let height = self
+            .positions
+            .iter()
+            .fold(0.0, |most: Real, p| most.max(p.y.abs()));
         let mut about_centre: Real = 0.0;
         let maps: Vec<Option<NormalMap>> = self.maps().collect();
         let tangents = maps.iter().any(Option::is_some).then(|| self.tangents());
@@ -326,6 +335,7 @@ impl MeshBuilder {
                 centre: middle,
                 radius: about_centre,
             },
+            height,
         }
     }
 }
