@@ -9,6 +9,13 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 
 ## Unreleased
 
+- fk-render: spots' shadows (`SpotShadow` beside a `PointLight` and its `Spot`, `SpotShadows`,
+  off by default): a perspective depth map from each of the lights nearest the eye, layers of
+  one texture, drawn when handed out or moved and otherwise in turn; `fk::shadow`'s
+  `shadowed_point_lights_in` keeps each spot's light off what stands behind something, raster
+  path, flat space only. Drawn by `Offscreen` too. Breaking: `FrameView::spots`,
+  `RendererSetup::spot_layout`, `GeometryRenderer::render_spot_shadows` (a default), the
+  lighting uniform's `PointLight` and `spot_shadow`; `fk::paint`'s `point_light_reach`.
 - fk-audio: `Audio::stream`, a sound made as it plays (the app fills each block of frames on
   the audio thread until its `Stream` is dropped); `Sound::rate` and `Sound::frames`, a clip's
   samples for code that plays it itself.

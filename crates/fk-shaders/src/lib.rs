@@ -32,8 +32,9 @@
 //! - `fk::deform`: one function, `deform(position, normal, iso, data) -> Shaped`, shaping a
 //!   mesh's vertices before their instance's isometry. The engine's module is the identity; a
 //!   caller replaces it through [`Hooks::deform`], as the ray marcher will take the caller's SDF.
-//! - `fk::shadow`: the directional light's shadow map (bind group 1) and `shadow_light`.
-//! - `fk::paint`: the painted light every surface takes (`banded`).
+//! - `fk::paint`: the painted light every surface takes (`banded`, `point_lights_in`).
+//! - `fk::shadow`: the directional light's shadow map and the spots' (bind group 1),
+//!   `shadow_light` and `shadowed_point_lights_in` (each spot's light kept off by its map).
 //!
 //! The ray-march skeleton imports, besides `fk::view`, `fk::geometry`, `fk::sky` and
 //! `fk::paint`:
@@ -116,7 +117,8 @@ const GEOMETRIES: &[(&str, &str, &str)] = &[
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Shader {
     /// Instanced meshes in flat painted colours. Entry points `vertex` and `fragment`,
-    /// `shadow_vertex` for the shadow map (no fragment stage), and `window_fragment` for
+    /// `shadow_vertex` for the shadow map and `spot_vertex` for a spot's (no fragment stage,
+    /// group 1 the map's matrix at binding 7), and `window_fragment` for
     /// windows onto the scene seen from another eye (its group 2).
     Raster,
     /// The fullscreen post pass. Entry points `vertex`, `fragment` and `text_fragment`.
@@ -165,6 +167,7 @@ impl Shader {
                 "see_through_fragment",
                 "clipped_see_through_fragment",
                 "shadow_vertex",
+                "spot_vertex",
                 "window_fragment",
             ],
             Self::Post => &["vertex", "fragment", "text_fragment"],
@@ -341,8 +344,8 @@ pub fn compose_module<'a>(
         hook(hooks.figure, FIGURE),
         SKY,
         DISPLACE,
-        SHADOW,
         PAINT,
+        SHADOW,
         MARCH,
         POST,
         SDF_LIB,

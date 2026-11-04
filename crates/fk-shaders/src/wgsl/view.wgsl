@@ -59,6 +59,12 @@ struct PointLight {
     shape: vec4<f32>,
     // A spot's axis, a tangent at `position`, in the eye's frame; zero shining every way.
     direction: vec4<f32>,
+    // A spot's shadow map (`fk_render::SpotShadow`): the eye's coordinates to its clip space
+    // (depth 0 near the light, 1 at its range). Flat space only.
+    shadow_matrix: mat4x4<f32>,
+    // x: its layer of `fk::shadow`'s spot maps plus 1, 0 for none; y: how far a surface is moved
+    // along its normal before the test, per unit of its distance from the light.
+    shadow: vec4<f32>,
 }
 
 // A cone of directions from the eye where the surfaces marked to be seen through are cut away
@@ -109,6 +115,9 @@ struct Lighting {
     // The point lights nearest the eye; x of `point_count` says how many are used.
     point_lights: array<PointLight, 32>,
     point_count: vec4<f32>,
+    // The spots' shadow maps: x 1 when any is drawn, y one texel in uv, z the soft edge's radius
+    // in texels.
+    spot_shadow: vec4<f32>,
     // More bodies in the sky, drawn as the sun and the moon are; x of `disc_count` says how
     // many are used.
     discs: array<Disc, 24>,

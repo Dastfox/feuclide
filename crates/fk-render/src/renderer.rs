@@ -28,6 +28,9 @@ pub struct RendererSetup<'a> {
     /// Layout of bind group 1 for pipelines that receive shadows (`fk::shadow`: the shadow map
     /// and its comparison sampler). The shadow pass itself only has group 0.
     pub shadow_layout: &'a wgpu::BindGroupLayout,
+    /// Layout of bind group 1 of the spots' shadow pass: the map's matrix, from the eye's
+    /// coordinates to its clip space, a uniform at binding 7 bound at a dynamic offset.
+    pub spot_layout: &'a wgpu::BindGroupLayout,
     /// Format of the opaque pass's colour target, linear HDR.
     pub color_format: wgpu::TextureFormat,
     /// Format of the depth target. Depth is reverse-Z (1 near, 0 far, compare `Greater`) and
@@ -57,6 +60,9 @@ pub struct FrameView<'a, G: GpuGeometry> {
     /// The shadow map this frame, when shadows are drawn: which casters to draw into it, those
     /// only whose shadows can fall within [`frustum`](Self::frustum).
     pub shadow: Option<ShadowView>,
+    /// The spots' maps drawn this frame ([`SpotShadow`](crate::SpotShadow)): which casters to
+    /// draw into each. Empty for every view but the frame's own.
+    pub spots: &'a [crate::SpotCast],
     /// Set when this is the image of the [`Elsewhere`](crate::Elsewhere) eye, or of one of the
     /// [`OtherEyes`](crate::OtherEyes), drawn before the frame: that eye relative to the
     /// active camera's, inverted (`elsewhere⁻¹ ∘ eye`).
@@ -123,7 +129,8 @@ pub struct FrameBindings<'a> {
 /// Every frame the render graph runs, in order: [`prepare`](Self::prepare) for every renderer
 /// (extract from the world and upload), [`queue`](Self::queue) for every renderer (visibility),
 /// [`render_shadows`](Self::render_shadows) for every renderer inside the shadow pass when
-/// [`FrameView::shadow`] is set, [`encode`](Self::encode) for every renderer, then
+/// [`FrameView::shadow`] is set, [`render_spot_shadows`](Self::render_spot_shadows) for every
+/// renderer inside each spot's map drawn, [`encode`](Self::encode) for every renderer, then
 /// [`render`](Self::render) for every renderer inside one opaque pass, on frames that show the
 /// [`LayerRender`](crate::LayerRender) [`render_layer`](Self::render_layer) for every renderer
 /// inside the layer pass, after the image effects [`render_late`](Self::render_late) for every
@@ -147,6 +154,18 @@ pub trait GeometryRenderer<G: GpuGeometry>: Send + Sync + 'static {
     /// `lighting.shadow_matrix`. Bind group 0 is `frame`. Draws nothing by default.
     fn render_shadows(&self, pass: &mut wgpu::RenderPass<'_>, frame: &wgpu::BindGroup) {
         let _ = (pass, frame);
+    }
+
+    /// Records the casters' draws into the map of a spot on `layer`
+    /// ([`FrameView::spots`]): depth only, from the light. Bind group 0 is `frame`; group 1 is
+    /// the map's matrix, bound by the caller at its offset. Draws nothing by default.
+    fn render_spot_shadows(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        frame: &wgpu::BindGroup,
+        layer: u32,
+    ) {
+        let _ = (pass, frame, layer);
     }
 
     /// Records passes of its own into offscreen targets, before the opaque pass (a ray march

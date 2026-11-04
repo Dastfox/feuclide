@@ -21,6 +21,7 @@ use crate::normal_map::NormalMaps;
 use crate::parting::{Parting, SeeThrough};
 use crate::quotient::{QuotientView, Unrepeated};
 use crate::renderer::{FrameBindings, FrameView, GeometryRenderer, Hidden, OnLayer, RendererSetup};
+use crate::spot::MAX_SPOT_SHADOWS;
 use crate::{Gpu, RenderStats};
 
 /// One instance as the GPU reads it.
@@ -107,6 +108,8 @@ struct Pipelines {
     clipped: wgpu::RenderPipeline,
     shadow: wgpu::RenderPipeline,
     shadow_both: wgpu::RenderPipeline,
+    /// Into a spot's map, both sides.
+    spot: wgpu::RenderPipeline,
     see_through: Option<SeeThroughPipelines>,
 }
 
@@ -286,6 +289,7 @@ struct Builder {
     device: wgpu::Device,
     opaque_layout: wgpu::PipelineLayout,
     shadow_layout: wgpu::PipelineLayout,
+    spot_layout: wgpu::PipelineLayout,
     color_format: wgpu::TextureFormat,
     depth_format: wgpu::TextureFormat,
     shadow_format: wgpu::TextureFormat,
@@ -346,6 +350,8 @@ pub struct RasterPipeline<G: GpuGeometry> {
     candidates: Vec<Candidate<G>>,
     bins: BTreeMap<BinKey, Vec<GpuInstance>>,
     shadow_bins: BTreeMap<BinKey, Vec<GpuInstance>>,
+    /// By the spot's map's layer.
+    spot_bins: Vec<BTreeMap<BinKey, Vec<GpuInstance>>>,
     layer_bins: BTreeMap<BinKey, Vec<GpuInstance>>,
     /// By eye, as [`Candidate::window`] numbers them.
     window_bins: [BTreeMap<BinKey, Vec<GpuInstance>>; 1 + MAX_OTHER_EYES],
@@ -354,6 +360,8 @@ pub struct RasterPipeline<G: GpuGeometry> {
     all: Vec<GpuInstance>,
     draws: Vec<Draw>,
     shadow_draws: Vec<Draw>,
+    /// By the spot's map's layer, those drawn this frame.
+    spot_draws: Vec<Vec<Draw>>,
     layer_draws: Vec<Draw>,
     window_draws: [Vec<Draw>; 1 + MAX_OTHER_EYES],
     /// Whether the view last queued is cut off at its clip plane.
@@ -392,6 +400,10 @@ impl<G: GpuGeometry> RasterPipeline<G> {
                 ],
             ),
             shadow_layout: layout("fk raster shadow", &[Some(setup.frame_layout)]),
+            spot_layout: layout(
+                "fk raster spot shadow",
+                &[Some(setup.frame_layout), Some(setup.spot_layout)],
+            ),
             color_format: setup.color_format,
             depth_format: setup.depth_format,
             shadow_format: setup.shadow_format,
@@ -425,12 +437,14 @@ impl<G: GpuGeometry> RasterPipeline<G> {
             candidates: Vec::new(),
             bins: BTreeMap::new(),
             shadow_bins: BTreeMap::new(),
+            spot_bins: (0..MAX_SPOT_SHADOWS).map(|_| BTreeMap::new()).collect(),
             layer_bins: BTreeMap::new(),
             window_bins: Default::default(),
             instances: None,
             all: Vec::new(),
             draws: Vec::new(),
             shadow_draws: Vec::new(),
+            spot_draws: (0..MAX_SPOT_SHADOWS).map(|_| Vec::new()).collect(),
             layer_draws: Vec::new(),
             window_draws: Default::default(),
             clipped: false,
@@ -720,14 +734,14 @@ impl Builder {
         let buffers = vertex_layouts(&vertex_attributes, &instance_attributes);
         let opaque = self.painted(label, &shader, "fragment");
         let clipped = self.painted(label, &shader, "clipped_fragment");
-        let shadow = |cull_mode| {
+        let shadow = |cull_mode, layout, entry_point| {
             self.device
                 .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some(label),
-                    layout: Some(&self.shadow_layout),
+                    layout: Some(layout),
                     vertex: wgpu::VertexState {
                         module: &shader,
-                        entry_point: Some("shadow_vertex"),
+                        entry_point: Some(entry_point),
                         compilation_options: Default::default(),
                         buffers: &buffers,
                     },
@@ -759,9 +773,16 @@ impl Builder {
             clipped,
             // The sides turned away from the light cast: the lit sides never shadow
             // themselves, and the dark sides are painted in the shadow colour anyway.
-            shadow: shadow(Some(wgpu::Face::Front)),
+            shadow: shadow(
+                Some(wgpu::Face::Front),
+                &self.shadow_layout,
+                "shadow_vertex",
+            ),
             // Every side: where solids meet, the nearer side shades the corner.
-            shadow_both: shadow(None),
+            shadow_both: shadow(None, &self.shadow_layout, "shadow_vertex"),
+            // A spot's light reaches into corners and under things from every side: both sides
+            // cast, and the normal offset keeps a lit face off its own.
+            spot: shadow(None, &self.spot_layout, "spot_vertex"),
             see_through: None,
         }
     }
@@ -942,6 +963,16 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                     .shadow
                     .is_some_and(|shadow| shadow.sees::<G>(&centre, radius))
                 && along.is_some_and(|along| view.frustum.sees_cast::<G>(&centre, radius, &along));
+            // The spots' maps it casts into, by layer.
+            let mut spots = 0u32;
+            if candidate.casts && !view.spots.is_empty() {
+                let embedded = G::embed_point(&centre);
+                for cast in view.spots {
+                    if cast.sees(&embedded, radius) {
+                        spots |= 1 << cast.layer;
+                    }
+                }
+            }
             if !seen {
                 stats.culled += 1;
             }
@@ -958,7 +989,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                         .frustum
                         .sees::<G>(&G::exp(&origin, &(towards * (-(round - d) / d))), radius)
             });
-            if !seen && !casts && !far_seen {
+            if !seen && !casts && !far_seen && spots == 0 {
                 continue;
             }
             // The lights whose range reaches its ball, a hair of slack for the fragments' f32;
@@ -1005,6 +1036,14 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
             if casts {
                 self.shadow_bins.entry(cast_key).or_default().push(instance);
             }
+            while spots != 0 {
+                let layer = spots.trailing_zeros() as usize;
+                spots &= spots - 1;
+                self.spot_bins[layer]
+                    .entry(cast_key)
+                    .or_default()
+                    .push(instance);
+            }
         }
         // Kept from frame to frame, so that its megabyte is not allocated anew each frame.
         let mut all = std::mem::take(&mut self.all);
@@ -1013,6 +1052,9 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
         stats.drawn = all.len();
         stats.draws = self.draws.len();
         Self::collect(&mut self.shadow_bins, &mut all, &mut self.shadow_draws);
+        for (bins, draws) in self.spot_bins.iter_mut().zip(&mut self.spot_draws) {
+            Self::collect(bins, &mut all, draws);
+        }
         Self::collect(&mut self.layer_bins, &mut all, &mut self.layer_draws);
         for (bins, draws) in self.window_bins.iter_mut().zip(&mut self.window_draws) {
             Self::collect(bins, &mut all, draws);
@@ -1048,6 +1090,21 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
             } else {
                 &pipelines.shadow
             });
+            pass.set_bind_group(0, frame, &[]);
+        });
+    }
+
+    fn render_spot_shadows(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        frame: &wgpu::BindGroup,
+        layer: u32,
+    ) {
+        let Some(draws) = self.spot_draws.get(layer as usize) else {
+            return;
+        };
+        self.draw(pass, draws, |pass, pipelines, _| {
+            pass.set_pipeline(&pipelines.spot);
             pass.set_bind_group(0, frame, &[]);
         });
     }
@@ -1117,6 +1174,7 @@ mod tests {
             gpu,
             frame_layout: &frame_layout,
             shadow_layout: &shadow_map.layout,
+            spot_layout: &shadow_map.spot_layout,
             color_format: wgpu::TextureFormat::Rgba8Unorm,
             depth_format: wgpu::TextureFormat::Depth32Float,
             shadow_format: SHADOW_FORMAT,
@@ -1138,6 +1196,7 @@ mod tests {
             size: [width, height],
             frustum: Frustum::new(fov, aspect, 100.0),
             shadow: None,
+            spots: &[],
             elsewhere: None,
             portal: None,
             realm: fk_scene::Realm::MAIN,
@@ -1279,6 +1338,7 @@ mod tests {
             gpu,
             frame_layout: &frame_layout,
             shadow_layout: &shadow_map.layout,
+            spot_layout: &shadow_map.spot_layout,
             color_format,
             depth_format,
             shadow_format: SHADOW_FORMAT,
@@ -1300,6 +1360,7 @@ mod tests {
             size: [width, height],
             frustum: Frustum::new(fov, aspect, 100.0),
             shadow: None,
+            spots: &[],
             elsewhere: None,
             portal: None,
             realm: fk_scene::Realm::MAIN,

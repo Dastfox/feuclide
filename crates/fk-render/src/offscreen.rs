@@ -1,7 +1,8 @@
 //! Drawing a scene into an image, without a window: the raster and ray-march paths into one
 //! target, for tests and the golden images (`tools/`).
 //!
-//! Only the opaque pass is drawn: no sky, no post effects, no shadows, no other eye. The target
+//! Only the opaque pass is drawn: no sky, no post effects, no directional shadows, no other eye;
+//! the spots' maps ([`SpotShadows`](crate::SpotShadows)) are, when they are enabled. The target
 //! is cleared to the sky's horizon colour and stored as sRGB, so what is read back is the
 //! image as the eye would see it before the post pass. Entities are placed by their
 //! [`GlobalPose`]; [`Offscreen::draw`] makes them relative to the eye itself.
@@ -18,6 +19,7 @@ use crate::elsewhere::ElsewhereShared;
 use crate::graph::{FrameBuffers, frame_blocks, frame_layout};
 use crate::renderer::{FrameBindings, FrameView, GeometryRenderer, RendererSetup};
 use crate::shadow::{SHADOW_FORMAT, ShadowMap};
+use crate::spot::{SpotTiles, hand_out};
 use crate::{Gpu, Lighting, RasterPipeline, RayMarchPipeline};
 
 /// Which ways of drawing surfaces draw.
@@ -68,6 +70,7 @@ pub struct Offscreen<G: GpuGeometry> {
     size: (u32, u32),
     frame: FrameBuffers,
     shadow_map: ShadowMap,
+    spot_tiles: SpotTiles,
     raster: RasterPipeline<G>,
     march: RayMarchPipeline<G>,
     color: wgpu::Texture,
@@ -86,6 +89,7 @@ impl<G: GpuGeometry> Offscreen<G> {
             gpu,
             frame_layout: &frame_layout,
             shadow_layout: &shadow_map.layout,
+            spot_layout: &shadow_map.spot_layout,
             color_format: COLOR_FORMAT,
             depth_format: DEPTH_FORMAT,
             shadow_format: SHADOW_FORMAT,
@@ -115,6 +119,7 @@ impl<G: GpuGeometry> Offscreen<G> {
             march: RayMarchPipeline::new(&setup),
             frame,
             shadow_map,
+            spot_tiles: SpotTiles::default(),
             color: texture(
                 COLOR_FORMAT,
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
@@ -156,12 +161,20 @@ impl<G: GpuGeometry> Offscreen<G> {
             eye: GlobalPose::new(*eye),
             realm: fk_scene::Realm::MAIN,
         };
+        let casts = hand_out::<G>(
+            &self.gpu,
+            &mut self.shadow_map,
+            &mut self.spot_tiles,
+            world,
+            Some(&active),
+        );
         let view = FrameView {
             view: &active,
             aspect,
             size: [width, height],
             frustum: Frustum::new(camera.fov_y, aspect, camera.far),
             shadow: None,
+            spots: &casts,
             elsewhere: None,
             portal: None,
             realm: fk_scene::Realm::MAIN,
@@ -199,6 +212,12 @@ impl<G: GpuGeometry> Offscreen<G> {
             others: [None; crate::MAX_OTHER_EYES],
         };
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        self.shadow_map
+            .spot_pass(&mut encoder, &casts, |pass, layer| {
+                for renderer in &renderers {
+                    renderer.render_spot_shadows(pass, &self.frame.bind_group, layer);
+                }
+            });
         for renderer in &renderers {
             renderer.encode(&mut encoder, &bindings);
         }
@@ -393,5 +412,99 @@ mod tests {
             Some(Vector3::new(0.0, 0.0, -2.5)),
         );
         assert!(bluish(both.pixel(40, 30)), "{:?}", both.pixel(40, 30));
+    }
+
+    /// A spot over a wall (AV1.4): the ground on the light's side lit, the ground the wall
+    /// stands between it and the light dark with its map, lit as without a wall with none.
+    #[test]
+    fn a_spot_over_a_wall_leaves_the_ground_behind_it_dark() {
+        use fk_geometry_euclidean::Se3;
+        use fk_math::nalgebra::{UnitQuaternion, Vector3};
+
+        use crate::{PointLight, Spot, SpotShadow, SpotShadows};
+
+        let Some(gpu) = Gpu::headless() else {
+            eprintln!("no adapter, skipped");
+            return;
+        };
+        let at = |x: Real, y: Real, z: Real, down: bool| Se3 {
+            rotation: if down {
+                // −z, the way a light and an eye look, turned to point down.
+                UnitQuaternion::from_axis_angle(&Vector3::x_axis(), -std::f64::consts::FRAC_PI_2)
+            } else {
+                UnitQuaternion::identity()
+            },
+            translation: Vector3::new(x, y, z),
+        };
+        let image = |maps: bool| {
+            let mut world = World::new();
+            let mut meshes = Meshes::default();
+            let ground = meshes.add(shapes::cuboid(Vector3::new(20.0, 0.05, 20.0)).build::<E3>());
+            let wall = meshes.add(shapes::cuboid(Vector3::new(4.0, 2.0, 0.1)).build::<E3>());
+            world.insert_resource(meshes);
+            world.spawn((
+                GlobalPose::<E3>::new(at(0.0, -0.05, 0.0, false)),
+                MeshInstances::<E3>::single(ground, Color::WHITE),
+            ));
+            world.spawn((
+                GlobalPose::<E3>::new(at(0.0, 2.0, 0.0, false)),
+                MeshInstances::<E3>::single(wall, Color::WHITE),
+            ));
+            world.spawn((
+                GlobalPose::<E3>::new(at(0.0, 3.0, -1.5, true)),
+                PointLight {
+                    color: Color::WHITE,
+                    intensity: 6.0,
+                    range: 12.0,
+                },
+                Spot {
+                    inner: 0.9,
+                    outer: 1.2,
+                },
+                SpotShadow::default(),
+            ));
+            world.insert_resource(SpotShadows {
+                enabled: maps,
+                ..SpotShadows::default()
+            });
+            let lighting = Lighting {
+                sun_color: Color::BLACK,
+                shadow_tint: Color::BLACK,
+                fog_density: 0.0,
+                smooth: 1.0,
+                ..Lighting::default()
+            };
+            // From high above, looking down: the light's side of the wall up the image.
+            Offscreen::<E3>::new(&gpu, 80, 80).draw(
+                &mut world,
+                &at(0.0, 14.0, 0.0, true),
+                &Camera::new(0.8, 0.1, 100.0),
+                &lighting,
+                Paths::Raster,
+            )
+        };
+        let (shadowed, unshadowed) = (image(true), image(false));
+        let lum = |p: [u8; 4]| u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2]);
+        // The ground 1.5 m before the wall, under the light; and 1.5 m behind it.
+        let (before, behind) = ((40, 31), (40, 49));
+        assert!(
+            lum(shadowed.pixel(before.0, before.1)) > 150,
+            "lit under the light"
+        );
+        assert!(
+            lum(unshadowed.pixel(behind.0, behind.1)) > 60,
+            "behind the wall, lit through it without a map: {:?}",
+            unshadowed.pixel(behind.0, behind.1)
+        );
+        assert!(
+            lum(shadowed.pixel(behind.0, behind.1)) < 15,
+            "dark behind the wall with one: {:?}",
+            shadowed.pixel(behind.0, behind.1)
+        );
+        assert_eq!(
+            lum(shadowed.pixel(before.0, before.1)),
+            lum(unshadowed.pixel(before.0, before.1)),
+            "the light's own side as it was"
+        );
     }
 }

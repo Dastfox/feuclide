@@ -24,28 +24,42 @@ fn point_lights(p: vec4<f32>, n: vec4<f32>) -> vec3<f32> {
 // order: those an instance's ball lies wholly out of the range of give nothing there anyway.
 fn point_lights_in(p: vec4<f32>, n: vec4<f32>, mask: u32) -> vec3<f32> {
     var sum = vec3<f32>(0.0);
-    let count = u32(lighting.point_count.x);
     let nn = inverseSqrt(max(geo_inner(p, n, n), 1e-12));
-    var bits = mask & select((1u << count) - 1u, 0xffffffffu, count >= 32u);
+    var bits = lights_masked(mask);
     while bits != 0u {
         let i = firstTrailingBit(bits);
         bits &= bits - 1u;
-        let light = lighting.point_lights[i];
-        let d = geo_distance(p, light.position);
-        let range = light.shape.y;
-        if d >= range {
-            continue;
+        let reach = point_light_reach(i, p, n, nn);
+        if reach > 0.0 {
+            sum += lighting.point_lights[i].color.rgb * banded(reach);
         }
-        let facing = max(geo_inner(p, n, geo_towards(p, light.position)) * nn, 0.0);
-        let x4 = pow(d / range, 4.0);
-        let window = (1.0 - x4) * (1.0 - x4);
-        var cone = 1.0;
-        if any(light.direction != vec4<f32>(0.0)) {
-            let along = geo_inner(light.position, light.direction, geo_towards(light.position, p));
-            cone = smoothstep(light.shape.w, light.shape.z, along);
-        }
-        let reach = light.shape.x * geo_light_falloff(d) * window * facing * cone;
-        sum += light.color.rgb * banded(reach);
     }
     return sum;
+}
+
+// The lights of `mask` there are this frame.
+fn lights_masked(mask: u32) -> u32 {
+    let count = u32(lighting.point_count.x);
+    return mask & select((1u << count) - 1u, 0xffffffffu, count >= 32u);
+}
+
+// How much of point light `i` reaches a surface at `p` with normal `n` (`nn` one over its
+// length), before its colour and the bands: its intensity after the geometry's falloff, the fade
+// at its range, how the surface faces it and, for a spot, its cone. 0 out of its range.
+fn point_light_reach(i: u32, p: vec4<f32>, n: vec4<f32>, nn: f32) -> f32 {
+    let light = lighting.point_lights[i];
+    let d = geo_distance(p, light.position);
+    let range = light.shape.y;
+    if d >= range {
+        return 0.0;
+    }
+    let facing = max(geo_inner(p, n, geo_towards(p, light.position)) * nn, 0.0);
+    let x4 = pow(d / range, 4.0);
+    let window = (1.0 - x4) * (1.0 - x4);
+    var cone = 1.0;
+    if any(light.direction != vec4<f32>(0.0)) {
+        let along = geo_inner(light.position, light.direction, geo_towards(light.position, p));
+        cone = smoothstep(light.shape.w, light.shape.z, along);
+    }
+    return light.shape.x * geo_light_falloff(d) * window * facing * cone;
 }

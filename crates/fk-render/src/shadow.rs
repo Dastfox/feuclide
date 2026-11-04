@@ -4,6 +4,7 @@ use fk_geometry::GpuGeometry;
 use fk_math::Real;
 use fk_math::nalgebra::{Matrix4, Vector3};
 
+use crate::spot::{MAX_SPOT_SHADOWS, TILE_STRIDE};
 use crate::{Gpu, Shadows};
 
 pub(crate) const SHADOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -93,39 +94,53 @@ impl ShadowView {
     }
 }
 
-/// The texture the casters are drawn into and the bind group (`fk::shadow`, group 1) the
-/// receivers read it through.
+/// The textures the casters are drawn into and the bind group (`fk::shadow`, group 1) the
+/// receivers read them through: the directional light's map, and the spots' maps
+/// ([`SpotShadow`](crate::SpotShadow)), a layer each.
 pub(crate) struct ShadowMap {
     pub layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     pub size: u32,
     pub view: wgpu::TextureView,
     pub bind_group: wgpu::BindGroup,
+    /// Texels across a spot's map, and how many layers.
+    pub spot_size: u32,
+    pub spot_count: u32,
+    /// The spots' maps, all their layers, as the receivers read them.
+    spot_array: wgpu::TextureView,
+    /// Each layer, as the spots' pass draws into it.
+    pub spot_layers: Vec<wgpu::TextureView>,
+    /// The spots' pass's group 1: each map's matrix at its layer's offset.
+    pub spot_layout: wgpu::BindGroupLayout,
+    spot_buffer: wgpu::Buffer,
+    pub spot_group: wgpu::BindGroup,
 }
 
 impl ShadowMap {
-    /// A map of one texel, until shadows are drawn.
+    /// Maps of one texel, until shadows are drawn.
     pub fn new(gpu: &Gpu) -> Self {
         let device = &gpu.device;
+        let depth = |binding, view_dimension| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension,
+                multisampled: false,
+            },
+            count: None,
+        };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("fk shadow"),
             entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
+                depth(0, wgpu::TextureViewDimension::D2),
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
+                depth(2, wgpu::TextureViewDimension::D2Array),
             ],
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -138,64 +153,197 @@ impl ShadowMap {
             compare: Some(wgpu::CompareFunction::LessEqual),
             ..Default::default()
         });
-        let (view, bind_group) = Self::texture(gpu, &layout, &sampler, 1);
+        let spot_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("fk spot shadow"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 7,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: wgpu::BufferSize::new(64),
+                },
+                count: None,
+            }],
+        });
+        let spot_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fk spot shadow"),
+            size: TILE_STRIDE * MAX_SPOT_SHADOWS as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let spot_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("fk spot shadow"),
+            layout: &spot_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 7,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &spot_buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(64),
+                }),
+            }],
+        });
+        let view = Self::texture(gpu, 1, 1)[0].clone();
+        let mut spot_layers = Self::texture(gpu, 1, 1);
+        let spot_array = spot_layers.pop().expect("the whole");
+        let bind_group = Self::bind(gpu, &layout, &sampler, &view, &spot_array);
         Self {
             layout,
             sampler,
             size: 1,
             view,
             bind_group,
+            spot_size: 1,
+            spot_count: 1,
+            spot_array,
+            spot_layers,
+            spot_layout,
+            spot_buffer,
+            spot_group,
         }
     }
 
-    /// Makes the texture `size` texels across, if it is not already.
+    /// Makes the directional light's map `size` texels across, if it is not already.
     pub fn resize(&mut self, gpu: &Gpu, size: u32) {
         let size = size.clamp(1, gpu.device.limits().max_texture_dimension_2d);
         if size != self.size {
-            (self.view, self.bind_group) = Self::texture(gpu, &self.layout, &self.sampler, size);
+            self.view = Self::texture(gpu, size, 1)[0].clone();
             self.size = size;
+            self.rebind(gpu);
         }
     }
 
-    fn texture(
+    /// Makes the spots' maps `size` texels across and `count` of them, if they are not
+    /// already: whether they were made again (and so hold nothing).
+    pub fn resize_spots(&mut self, gpu: &Gpu, size: u32, count: u32) -> bool {
+        let limits = gpu.device.limits();
+        let size = size.clamp(1, limits.max_texture_dimension_2d);
+        let count = count.clamp(
+            1,
+            (MAX_SPOT_SHADOWS as u32).min(limits.max_texture_array_layers),
+        );
+        if (size, count) == (self.spot_size, self.spot_count) {
+            return false;
+        }
+        let mut layers = Self::texture(gpu, size, count);
+        self.spot_array = layers.pop().expect("the whole");
+        self.spot_layers = layers;
+        (self.spot_size, self.spot_count) = (size, count);
+        self.rebind(gpu);
+        true
+    }
+
+    /// Writes the matrix of the map on `layer`, from the eye's coordinates to its clip space.
+    pub fn write_spot(&self, gpu: &Gpu, layer: u32, matrix: &Matrix4<Real>) {
+        let columns = crate::gpu::matrix_columns(matrix);
+        gpu.queue.write_buffer(
+            &self.spot_buffer,
+            u64::from(layer) * TILE_STRIDE,
+            bytemuck::cast_slice(&columns),
+        );
+    }
+
+    fn rebind(&mut self, gpu: &Gpu) {
+        self.bind_group = Self::bind(
+            gpu,
+            &self.layout,
+            &self.sampler,
+            &self.view,
+            &self.spot_array,
+        );
+    }
+
+    /// A depth texture `size` texels across with `layers` layers: a view of each, then one of
+    /// the whole as an array.
+    fn texture(gpu: &Gpu, size: u32, layers: u32) -> Vec<wgpu::TextureView> {
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("fk shadow map"),
+            size: wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: layers,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: SHADOW_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let mut views: Vec<_> = (0..layers)
+            .map(|layer| {
+                texture.create_view(&wgpu::TextureViewDescriptor {
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    base_array_layer: layer,
+                    array_layer_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        views.push(texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        }));
+        views
+    }
+
+    fn bind(
         gpu: &Gpu,
         layout: &wgpu::BindGroupLayout,
         sampler: &wgpu::Sampler,
-        size: u32,
-    ) -> (wgpu::TextureView, wgpu::BindGroup) {
-        let view = gpu
-            .device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("fk shadow map"),
-                size: wgpu::Extent3d {
-                    width: size,
-                    height: size,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: SHADOW_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            })
-            .create_view(&Default::default());
-        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        view: &wgpu::TextureView,
+        spots: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("fk shadow"),
             layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
+                    resource: wgpu::BindingResource::TextureView(view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(spots),
+                },
             ],
-        });
-        (view, bind_group)
+        })
+    }
+
+    /// Records the spots' pass: each map of `casts` cleared, its matrix bound in group 1, and
+    /// drawn by `draw`, given the pass and the layer.
+    pub fn spot_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        casts: &[crate::SpotCast],
+        mut draw: impl FnMut(&mut wgpu::RenderPass<'_>, u32),
+    ) {
+        for layer in casts.iter().map(|cast| cast.layer) {
+            let Some(target) = self.spot_layers.get(layer as usize) else {
+                continue;
+            };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("fk spot shadow"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: target,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            let offset = (u64::from(layer) * TILE_STRIDE) as u32;
+            pass.set_bind_group(1, &self.spot_group, &[offset]);
+            draw(&mut pass, layer);
+        }
     }
 }
 

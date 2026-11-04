@@ -15,10 +15,10 @@
 }
 #import fk::sky::sky_haze
 #import fk::portal::portal_keeps
-#import fk::paint::{banded, point_lights_in}
+#import fk::paint::banded
 #import fk::displace::Shaped
 #import fk::deform::deform
-#import fk::shadow::{shadow_coords, shadow_light}
+#import fk::shadow::{shadow_coords, shadow_light, shadowed_point_lights_in}
 
 // The window pipeline's own group: the scene seen from another eye (`fk_render::Elsewhere`),
 // its sampler, and (x) 1 when that image is shown upside down. The painted pipeline does not
@@ -109,6 +109,19 @@ fn shadow_vertex(in: Vertex) -> @builtin(position) vec4<f32> {
     let q = shadow_coords(geo_apply_iso(iso, shaped.position));
     // Casters nearer the light than the map's near side still cast, from its near side.
     return vec4<f32>(q.xy, max(q.z, 0.0), 1.0);
+}
+
+// The spots' maps' pass (`fk_render::SpotShadow`): from the eye's coordinates to the clip space
+// of the map drawn, bound at its offset for each.
+@group(1) @binding(7) var<uniform> spot_tile: mat4x4<f32>;
+
+// The same shapes seen from a spot. No fragment stage.
+@vertex
+fn spot_vertex(in: Vertex) -> @builtin(position) vec4<f32> {
+    let iso = instance_iso(in);
+    let shaped = deform(in.position, in.normal, iso, in.data);
+    let p = geo_apply_iso(iso, shaped.position);
+    return spot_tile * vec4<f32>(p.xyz / p.w, 1.0);
 }
 
 // How flat the maps are `d` from the eye: 0 whole, 1 flat, by `normal_fade`; flat everywhere
@@ -235,7 +248,7 @@ fn paint(in: Varyings) -> vec4<f32> {
         shadow = shadow_light(p, n.xyz * inverseSqrt(max(dot(n.xyz, n.xyz), 1e-12)));
     }
     let light = mix(lighting.shadow_tint.rgb, lighting.sun_color.rgb, sunlit * shadow);
-    let lit = in.color.rgb * tone * (light + point_lights_in(p, n, in.lights));
+    let lit = in.color.rgb * tone * (light + shadowed_point_lights_in(p, n, in.lights));
 
     // Fade fully into the sky before the far surface, so culling there is invisible. The fog
     // takes the colour of the sky behind the surface, glows included; a deformed vertex can

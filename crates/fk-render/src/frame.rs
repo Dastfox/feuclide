@@ -567,6 +567,8 @@ pub(crate) struct LightingBlock {
     /// The point lights nearest the eye; x of `point_count` says how many are used.
     pub point_lights: [PointLightBlock; crate::light::MAX_POINT_LIGHTS],
     pub point_count: Vec4f,
+    /// The spots' maps: on (1) or off, one texel in uv, the soft edge in texels.
+    pub spot_shadow: Vec4f,
     /// [`SkyDiscs`]; x of `disc_count` says how many are used.
     pub discs: [DiscBlock; MAX_SKY_DISCS],
     pub disc_count: Vec4f,
@@ -594,6 +596,10 @@ pub(crate) struct PointLightBlock {
     /// A spot's axis, embedded at `position`, in the eye's frame; zero for a light shining every
     /// way.
     pub direction: Vec4f,
+    /// Columns of the matrix from eye coordinates to its shadow map's clip space.
+    pub shadow_matrix: [Vec4f; 4],
+    /// Its map's layer plus 1 (0 for none), the normal offset per unit of distance.
+    pub shadow: Vec4f,
 }
 
 #[derive(ShaderType)]

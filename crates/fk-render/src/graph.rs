@@ -38,6 +38,7 @@ use crate::seen::{DiscProbe, SeenProbe};
 use crate::settle::SettlePass;
 use crate::shadow::{SHADOW_FORMAT, ShadowMap, ShadowView};
 use crate::sky::SkyPass;
+use crate::spot::{SpotLit, SpotTiles};
 use crate::timing::GpuTimer;
 use crate::{Color, DiscShape, SkyDisc};
 use crate::{
@@ -140,6 +141,8 @@ pub(crate) struct RenderState<G: GpuGeometry> {
     renderers: Vec<Box<dyn GeometryRenderer<G>>>,
     sky: SkyPass,
     shadow_map: ShadowMap,
+    /// Which light holds which of the spots' maps.
+    spot_tiles: SpotTiles,
     settle: SettlePass,
     /// The caller's image effects, in the order they run.
     effects: Vec<Box<dyn ImageEffect>>,
@@ -381,6 +384,7 @@ impl<G: GpuGeometry> RenderState<G> {
             gpu: &gpu,
             frame_layout: &frame_layout,
             shadow_layout: &shadow_map.layout,
+            spot_layout: &shadow_map.spot_layout,
             color_format: COLOR_FORMAT,
             depth_format: DEPTH_FORMAT,
             shadow_format: SHADOW_FORMAT,
@@ -443,6 +447,7 @@ impl<G: GpuGeometry> RenderState<G> {
             renderers,
             sky,
             shadow_map,
+            spot_tiles: SpotTiles::default(),
             settle,
             effects,
             late,
@@ -682,6 +687,15 @@ impl<G: GpuGeometry> RenderState<G> {
         };
         let lighting = lit(view.as_ref().map(|view| view.realm));
         let shadows = world.get_resource::<Shadows>().copied().unwrap_or_default();
+        // The spots' maps handed out for the frame's eye, before any view's lighting is
+        // written: every view reads them, those drawn this frame drawn after the shadow pass.
+        let spot_casts = crate::spot::hand_out::<G>(
+            &self.gpu,
+            &mut self.shadow_map,
+            &mut self.spot_tiles,
+            world,
+            view.as_ref(),
+        );
         // The other eye's image first, submitted on its own: the frame's buffers are written
         // again for the frame's own eye after it.
         let other = world
@@ -850,6 +864,7 @@ impl<G: GpuGeometry> RenderState<G> {
                 size: [size.width, size.height],
                 frustum: Frustum::new(view.camera.fov_y, aspect, view.camera.far),
                 shadow,
+                spots: &spot_casts,
                 elsewhere: None,
                 portal: None,
                 realm: view.realm,
@@ -901,6 +916,10 @@ impl<G: GpuGeometry> RenderState<G> {
             self.shadow_pass(&mut encoder);
         }
         self.timer.mark(&mut encoder, "shadows");
+        if !spot_casts.is_empty() {
+            self.spot_pass(&mut encoder, &spot_casts);
+            self.timer.mark(&mut encoder, "spots");
+        }
         if view.is_some() {
             self.offscreen_passes(&mut encoder);
         }
@@ -1181,6 +1200,16 @@ impl<G: GpuGeometry> RenderState<G> {
         }
     }
 
+    /// Records the spots' pass: each map of `casts` drawn by the renderers' last `queue`, the
+    /// frame's own.
+    fn spot_pass(&self, encoder: &mut wgpu::CommandEncoder, casts: &[crate::SpotCast]) {
+        self.shadow_map.spot_pass(encoder, casts, |pass, layer| {
+            for renderer in &self.renderers {
+                renderer.render_spot_shadows(pass, &self.frame.bind_group, layer);
+            }
+        });
+    }
+
     /// Records the renderers' offscreen passes (the ray marcher's half-resolution and ahead
     /// marches among them) for the view their last `queue` was given.
     fn offscreen_passes(&self, encoder: &mut wgpu::CommandEncoder) {
@@ -1281,6 +1310,7 @@ impl<G: GpuGeometry> RenderState<G> {
                 None => Frustum::new(fov_y, aspect, far),
             },
             shadow,
+            spots: &[],
             elsewhere: Some(shift),
             portal: None,
             realm: seen.realm,
@@ -1437,6 +1467,7 @@ impl<G: GpuGeometry> RenderState<G> {
             size: [size.width, size.height],
             frustum: Frustum::part(fov_y, aspect, far, seen.part),
             shadow,
+            spots: &[],
             elsewhere: None,
             portal: Some(shift),
             realm: seen.realm,
@@ -1804,6 +1835,12 @@ pub(crate) fn frame_blocks<G: GpuGeometry>(
         ]),
         point_lights,
         point_count: Vec4f([point_count as f32, 0.0, 0.0, 0.0]),
+        spot_shadow: match world.get_resource::<SpotLit<G>>() {
+            Some(lit) if !lit.tiles.is_empty() => {
+                Vec4f([1.0, lit.texel as f32, lit.softness as f32, 0.0])
+            }
+            _ => Vec4f::default(),
+        },
         discs: std::array::from_fn(|i| disc(extra.get(i).unwrap_or(&SkyDisc::default()))),
         disc_count: Vec4f([extra.len().min(MAX_SKY_DISCS) as f32, 0.0, 0.0, 0.0]),
         parts: std::array::from_fn(|i| {
@@ -1854,6 +1891,9 @@ fn in_eye_frame<G: GpuGeometry>(view: &ActiveView<G>, direction: &Vector3<Real>)
 /// A point light chosen for a view: where it is relative to the view's eye, the light, and its
 /// spot's axis there with the spot.
 pub(crate) struct ChosenLight<G: GpuGeometry> {
+    pub entity: Entity,
+    /// The light's pose relative to the eye.
+    pub relative: G::Isometry,
     pub at: G::Point,
     pub light: PointLight,
     pub spot: Option<(fk_math::nalgebra::Vector4<Real>, Spot)>,
@@ -1892,14 +1932,21 @@ pub(crate) fn chosen_lights<G: GpuGeometry>(
                 (G::embed_tangent(&at, &axis), *spot)
             });
             // How far short of the eye its light stops: the nearest reach first.
-            (G::distance(&origin, &at) - light.range, at, *light, spot)
+            let short = G::distance(&origin, &at) - light.range;
+            (short, entity, relative, at, *light, spot)
         })
         .collect();
     lights.sort_by(|a, b| a.0.total_cmp(&b.0));
     lights
         .into_iter()
         .take(MAX_POINT_LIGHTS)
-        .map(|(_, at, light, spot)| ChosenLight { at, light, spot })
+        .map(|(_, entity, relative, at, light, spot)| ChosenLight {
+            entity,
+            relative,
+            at,
+            light,
+            spot,
+        })
         .collect()
 }
 
@@ -1911,7 +1958,28 @@ fn point_lights<G: GpuGeometry>(
     let mut blocks = [PointLightBlock::default(); MAX_POINT_LIGHTS];
     let chosen = chosen_lights(world, view);
     let count = chosen.len();
-    for (block, ChosenLight { at, light, spot }) in blocks.iter_mut().zip(chosen) {
+    let maps = world.get_resource::<SpotLit<G>>();
+    for (block, chosen) in blocks.iter_mut().zip(chosen) {
+        let ChosenLight {
+            entity,
+            relative,
+            at,
+            light,
+            spot,
+        } = chosen;
+        // Its map: from the eye's coordinates to the light's, then the map's projection.
+        let (shadow_matrix, shadow) = match maps.and_then(|maps| maps.of(entity)) {
+            Some(tile) => {
+                let to_light = G::isometry_matrix(&relative)
+                    .try_inverse()
+                    .unwrap_or_else(Matrix4::identity);
+                (
+                    matrix_columns(&(tile.projection * to_light)).map(Vec4f),
+                    Vec4f([(tile.layer + 1) as f32, tile.offset as f32, 0.0, 0.0]),
+                )
+            }
+            None => ([Vec4f::default(); 4], Vec4f::default()),
+        };
         let (cones, direction) = match spot {
             Some((axis, spot)) => (
                 [spot.inner.cos() as f32, spot.outer.cos() as f32],
@@ -1929,6 +1997,8 @@ fn point_lights<G: GpuGeometry>(
                 cones[1],
             ]),
             direction,
+            shadow_matrix,
+            shadow,
         };
     }
     (blocks, count)

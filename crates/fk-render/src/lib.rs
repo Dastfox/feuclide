@@ -102,6 +102,7 @@ mod settle;
 mod shadow;
 pub mod shapes;
 mod sky;
+mod spot;
 mod timing;
 
 use std::marker::PhantomData;
@@ -153,6 +154,7 @@ pub use renderer::{
 pub use screenshot::Screenshots;
 pub use seen::{DiscsSeen, SeenProbe};
 pub use shadow::ShadowView;
+pub use spot::{MAX_SPOT_SHADOWS, SpotCast, SpotShadow, SpotShadows};
 pub use timing::GpuTimings;
 
 /// The renderer's systems, in the [`Render`] schedule: a system that must see the world as it
