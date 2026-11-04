@@ -1835,7 +1835,7 @@ pub(crate) fn frame_blocks<G: GpuGeometry>(
         ]),
         point_lights,
         point_count: Vec4f([point_count as f32, 0.0, 0.0, 0.0]),
-        spot_shadow: match world.get_resource::<SpotLit<G>>() {
+        spot_shadow: match world.get_resource::<SpotLit>() {
             Some(lit) if !lit.tiles.is_empty() => {
                 Vec4f([1.0, lit.texel as f32, lit.softness as f32, 0.0])
             }
@@ -1892,8 +1892,6 @@ fn in_eye_frame<G: GpuGeometry>(view: &ActiveView<G>, direction: &Vector3<Real>)
 /// spot's axis there with the spot.
 pub(crate) struct ChosenLight<G: GpuGeometry> {
     pub entity: Entity,
-    /// The light's pose relative to the eye.
-    pub relative: G::Isometry,
     pub at: G::Point,
     pub light: PointLight,
     pub spot: Option<(fk_math::nalgebra::Vector4<Real>, Spot)>,
@@ -1933,16 +1931,15 @@ pub(crate) fn chosen_lights<G: GpuGeometry>(
             });
             // How far short of the eye its light stops: the nearest reach first.
             let short = G::distance(&origin, &at) - light.range;
-            (short, entity, relative, at, *light, spot)
+            (short, entity, at, *light, spot)
         })
         .collect();
     lights.sort_by(|a, b| a.0.total_cmp(&b.0));
     lights
         .into_iter()
         .take(MAX_POINT_LIGHTS)
-        .map(|(_, entity, relative, at, light, spot)| ChosenLight {
+        .map(|(_, entity, at, light, spot)| ChosenLight {
             entity,
-            relative,
             at,
             light,
             spot,
@@ -1958,27 +1955,22 @@ fn point_lights<G: GpuGeometry>(
     let mut blocks = [PointLightBlock::default(); MAX_POINT_LIGHTS];
     let chosen = chosen_lights(world, view);
     let count = chosen.len();
-    let maps = world.get_resource::<SpotLit<G>>();
+    let maps = world.get_resource::<SpotLit>();
     for (block, chosen) in blocks.iter_mut().zip(chosen) {
         let ChosenLight {
             entity,
-            relative,
             at,
             light,
             spot,
         } = chosen;
-        // Its map: from the eye's coordinates to the light's, then the map's projection.
-        let (shadow_matrix, shadow) = match maps.and_then(|maps| maps.of(entity)) {
-            Some(tile) => {
-                let to_light = G::isometry_matrix(&relative)
-                    .try_inverse()
-                    .unwrap_or_else(Matrix4::identity);
-                (
-                    matrix_columns(&(tile.projection * to_light)).map(Vec4f),
-                    Vec4f([(tile.layer + 1) as f32, tile.offset as f32, 0.0, 0.0]),
-                )
-            }
-            None => ([Vec4f::default(); 4], Vec4f::default()),
+        // Its map, from the eye's coordinates to the light's as the map was drawn from, then
+        // the map's projection.
+        let (shadow_matrix, shadow) = match (maps.and_then(|maps| maps.of(entity)), view) {
+            (Some(tile), Some(view)) => (
+                matrix_columns(&tile.matrix::<G>(&view.eye.isometry)).map(Vec4f),
+                Vec4f([(tile.layer + 1) as f32, tile.offset as f32, 0.0, 0.0]),
+            ),
+            _ => ([Vec4f::default(); 4], Vec4f::default()),
         };
         let (cones, direction) = match spot {
             Some((axis, spot)) => (

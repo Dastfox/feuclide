@@ -61,6 +61,9 @@ pub struct SpotShadows {
     pub widest: Real,
     /// Maps of still lights drawn again each frame, in turn.
     pub refresh: u32,
+    /// How far a light may move (metres, or as much turning in radians) and keep its map: a
+    /// light carried a hair this way and that (by a deform's sway) is drawn again only in turn.
+    pub stray: Real,
 }
 
 impl Default for SpotShadows {
@@ -73,18 +76,19 @@ impl Default for SpotShadows {
             normal_offset: 1.5,
             widest: 75f64.to_radians(),
             refresh: 1,
+            stray: 0.0,
         }
     }
 }
 
 /// A light handed a map this frame.
 #[derive(Clone, Debug)]
-pub(crate) struct SpotTile<G: GpuGeometry> {
+pub(crate) struct SpotTile {
     pub entity: Entity,
     /// Its layer of the texture.
     pub layer: u32,
-    /// Where the light is, relative to the root.
-    pub pose: G::Isometry,
+    /// Where the light was when its map was drawn: from its frame to the root's coordinates.
+    pub light: Matrix4<Real>,
     /// From the light's frame to the map's clip space.
     pub projection: Matrix4<Real>,
     /// How far along its normal a surface is moved before it is tested, per unit of its
@@ -97,22 +101,27 @@ pub(crate) struct SpotTile<G: GpuGeometry> {
     pub half: Real,
 }
 
-impl<G: GpuGeometry> SpotTile<G> {
+impl SpotTile {
     /// From the coordinates of an eye at `eye` (relative to the root) to the map's clip space.
-    pub fn matrix(&self, eye: &G::Isometry) -> Matrix4<Real> {
-        let relative = eye.inverse().compose(&self.pose);
-        let to_light = G::isometry_matrix(&relative)
-            .try_inverse()
-            .unwrap_or_else(Matrix4::identity);
-        self.projection * to_light
+    pub fn matrix<G: GpuGeometry>(&self, eye: &G::Isometry) -> Matrix4<Real> {
+        self.projection
+            * self
+                .seen_from::<G>(eye)
+                .try_inverse()
+                .unwrap_or_else(Matrix4::identity)
+    }
+
+    /// From the light's frame to the eye's coordinates.
+    fn seen_from<G: GpuGeometry>(&self, eye: &G::Isometry) -> Matrix4<Real> {
+        G::isometry_matrix(&eye.inverse()) * self.light
     }
 
     /// What the casters are culled against, seen from an eye at `eye`.
-    pub fn cast(&self, eye: &G::Isometry) -> SpotCast {
-        let m = G::isometry_matrix(&eye.inverse().compose(&self.pose));
+    pub fn cast<G: GpuGeometry>(&self, eye: &G::Isometry) -> SpotCast {
+        let m = self.seen_from::<G>(eye);
         SpotCast {
             layer: self.layer,
-            matrix: self.matrix(eye),
+            matrix: self.matrix::<G>(eye),
             at: m.fixed_view::<3, 1>(0, 3).into_owned(),
             axis: -m.fixed_view::<3, 1>(0, 2).into_owned().normalize(),
             range: self.range,
@@ -157,15 +166,15 @@ impl SpotCast {
 
 /// The maps' lights this frame, as a resource, read where each view's lighting is written.
 #[derive(Resource, Clone, Debug)]
-pub(crate) struct SpotLit<G: GpuGeometry> {
-    pub tiles: Vec<SpotTile<G>>,
+pub(crate) struct SpotLit {
+    pub tiles: Vec<SpotTile>,
     /// One texel, in uv; the soft edge, in texels.
     pub texel: Real,
     pub softness: Real,
 }
 
-impl<G: GpuGeometry> SpotLit<G> {
-    pub fn of(&self, entity: Entity) -> Option<&SpotTile<G>> {
+impl SpotLit {
+    pub fn of(&self, entity: Entity) -> Option<&SpotTile> {
         self.tiles.iter().find(|tile| tile.entity == entity)
     }
 }
@@ -193,7 +202,7 @@ impl SpotTiles {
         view: &ActiveView<G>,
         settings: &SpotShadows,
         redraw: bool,
-    ) -> Vec<SpotTile<G>> {
+    ) -> Vec<SpotTile> {
         let most = (settings.most as usize).min(MAX_SPOT_SHADOWS);
         self.held.resize(most, None);
         if !settings.enabled || most == 0 || G::constant_curvature() != Some(0.0) {
@@ -233,6 +242,7 @@ impl SpotTiles {
         }
         let mut tiles = Vec::with_capacity(lights.len());
         let mut still = Vec::new();
+        let now: Vec<G::Isometry> = lights.iter().map(|light| light.2).collect();
         for (_, entity, pose, light, spot, shadow) in lights {
             let matrix = G::isometry_matrix(&pose);
             let (layer, draw) = match self
@@ -242,7 +252,7 @@ impl SpotTiles {
             {
                 Some(layer) => {
                     let (_, was) = self.held[layer].expect("held");
-                    let moved = (matrix - was).abs().max() > 1e-6;
+                    let moved = (matrix - was).abs().max() > settings.stray.max(1e-9);
                     (layer, moved || redraw)
                 }
                 None => {
@@ -254,7 +264,12 @@ impl SpotTiles {
                     (layer, true)
                 }
             };
-            self.held[layer] = Some((entity, matrix));
+            // Kept as it was drawn while it strays no further.
+            let drawn = match self.held[layer] {
+                Some((_, was)) if !draw => was,
+                _ => matrix,
+            };
+            self.held[layer] = Some((entity, drawn));
             if !draw {
                 still.push(tiles.len());
             }
@@ -264,7 +279,7 @@ impl SpotTiles {
             tiles.push(SpotTile {
                 entity,
                 layer: layer as u32,
-                pose,
+                light: drawn,
                 projection: projection(half, near, light.range),
                 offset: settings.normal_offset.max(0.0) * texel,
                 draw,
@@ -276,7 +291,10 @@ impl SpotTiles {
         if !still.is_empty() {
             still.sort_by_key(|&k| (tiles[k].layer as usize + most - self.turn % most) % most);
             for &k in still.iter().take(settings.refresh as usize) {
-                tiles[k].draw = true;
+                let tile = &mut tiles[k];
+                tile.draw = true;
+                tile.light = G::isometry_matrix(&now[k]);
+                self.held[tile.layer as usize] = Some((tile.entity, tile.light));
             }
             self.turn = (self.turn + settings.refresh as usize) % most;
         }
@@ -306,7 +324,7 @@ pub(crate) fn hand_out<G: GpuGeometry>(
             let casts: Vec<_> = tiles
                 .iter()
                 .filter(|tile| tile.draw)
-                .map(|tile| tile.cast(&view.eye.isometry))
+                .map(|tile| tile.cast::<G>(&view.eye.isometry))
                 .collect();
             (tiles, casts)
         }
@@ -318,7 +336,7 @@ pub(crate) fn hand_out<G: GpuGeometry>(
     for cast in &casts {
         map.write_spot(gpu, cast.layer, &cast.matrix);
     }
-    world.insert_resource(SpotLit::<G> {
+    world.insert_resource(SpotLit {
         tiles,
         texel: 1.0 / Real::from(map.spot_size),
         softness: settings.softness.max(0.0),
@@ -466,9 +484,41 @@ mod tests {
         let eye = there.eye.isometry;
         let below = E3::apply(
             &eye.inverse(),
-            &E3::apply(&tile.pose, &Point3::new(0.0, 0.0, -2.0)),
+            &E3::apply(&translation(60.0, 3.0, 0.0), &Point3::new(0.0, 0.0, -2.0)),
         );
-        let q = tile.matrix(&eye) * Vector4::new(below.x, below.y, below.z, 1.0);
+        let q = tile.matrix::<E3>(&eye) * Vector4::new(below.x, below.y, below.z, 1.0);
         assert!((q.x / q.w).abs() < 1e-9 && (q.y / q.w).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_light_straying_a_hair_keeps_its_map_as_it_was_drawn() {
+        let mut world = World::new();
+        let lamp = lamp(&mut world, 1.0);
+        let view = ActiveView::<E3> {
+            entity: Entity::PLACEHOLDER,
+            camera: Camera::new(1.0, 0.1, 100.0),
+            eye: GlobalPose::new(translation(0.0, 1.7, 0.0)),
+            realm: Realm::MAIN,
+        };
+        let settings = SpotShadows {
+            enabled: true,
+            refresh: 0,
+            stray: 0.05,
+            ..SpotShadows::default()
+        };
+        let mut tiles = SpotTiles::default();
+        let drawn = tiles.assign(&world, &view, &settings, false)[0].light;
+        let mut moved = |x: Real| {
+            world
+                .entity_mut(lamp)
+                .insert(GlobalPose::<E3>::new(translation(x, 3.0, 0.0)));
+            tiles.assign(&world, &view, &settings, false)[0].clone()
+        };
+        let swayed = moved(1.03);
+        assert!(!swayed.draw);
+        assert_eq!(swayed.light, drawn, "sampled as it was drawn");
+        // Strayed further from where it was drawn, a step at a time: drawn again.
+        assert!(!moved(1.045).draw);
+        assert!(moved(1.06).draw);
     }
 }

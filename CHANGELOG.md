@@ -9,6 +9,8 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 
 ## Unreleased
 
+- fk-render: `SpotShadows::stray`, how far a light may sway and keep its map (sampled as it was
+  drawn until it is drawn again in turn).
 - fk-render: spots' shadows (`SpotShadow` beside a `PointLight` and its `Spot`, `SpotShadows`,
   off by default): a perspective depth map from each of the lights nearest the eye, layers of
   one texture, drawn when handed out or moved and otherwise in turn; `fk::shadow`'s
