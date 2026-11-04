@@ -9,6 +9,11 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 
 ## Unreleased
 
+- fk-scene: `heard` (and `Portals::heard`), where a sound in another realm is heard from: the
+  way through the passable opening joining the two realms that is shortest, placed towards it
+  as far as the whole way round, or nothing with none. fk-audio: `Emitter::muffle`, its sounds'
+  cutoff glided down as through a wall or a doorway (with a directional emitter's head shadow,
+  the lower of the two).
 - fk-render: `SpotShadows::stray`, how far a light may sway and keep its map (sampled as it was
   drawn until it is drawn again in turn).
 - fk-render: spots' shadows (`SpotShadow` beside a `PointLight` and its `Spot`, `SpotShadows`,

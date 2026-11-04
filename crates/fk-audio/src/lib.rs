@@ -525,14 +525,18 @@ impl Audio {
                 max_distance: far.max(near + 1e-3) as f32,
             })
             .spatialization_strength(directional.pan.clamp(0.0, 1.0) as f32);
-        let shadow = directional.behind.map(|behind| {
-            let filter = builder.add_effect(FilterBuilder::new().cutoff(Outside::OPEN));
-            (filter, behind.clamp(20.0, Outside::OPEN))
-        });
+        // One low-pass for the head's shadow behind it and for a muffle, whichever is lower.
+        let filter = builder.add_effect(FilterBuilder::new().cutoff(Outside::OPEN));
+        let behind = directional
+            .behind
+            .map(|behind| behind.clamp(20.0, Outside::OPEN));
         match track.add_spatial_sub_track(listener, mint_of(at), builder) {
             Ok(track) => Emitter {
                 track: Some(track),
-                shadow,
+                filter: Some(filter),
+                behind,
+                muffle: Outside::OPEN,
+                at: *at,
             },
             Err(error) => {
                 tracing::warn!("cannot place a sound: {error}");
@@ -590,11 +594,29 @@ impl Directional {
 /// A place sounds play from, outside or in the room, about the ear: see [`Audio::emitter`],
 /// [`Audio::emitter_in_room`] and [`Audio::directional_emitter`]. Silent if made without a
 /// device ([`Emitter::default`]). Dropped, its sounds stop.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Emitter {
     track: Option<SpatialTrackHandle>,
-    /// The low-pass the head shadows it with behind, and its cutoff straight behind.
-    shadow: Option<(FilterHandle, Real)>,
+    /// Its low-pass: the head's shadow behind, a muffle.
+    filter: Option<FilterHandle>,
+    /// The cutoff straight behind, for a directional emitter.
+    behind: Option<Real>,
+    /// The cutoff it is muffled to, [`Outside::OPEN`] for none.
+    muffle: Real,
+    /// Where it is about the ear.
+    at: Vector3<Real>,
+}
+
+impl Default for Emitter {
+    fn default() -> Self {
+        Self {
+            track: None,
+            filter: None,
+            behind: None,
+            muffle: Outside::OPEN,
+            at: Vector3::zeros(),
+        }
+    }
 }
 
 impl Emitter {
@@ -603,8 +625,32 @@ impl Emitter {
         if let Some(track) = &mut self.track {
             track.set_position(mint_of(at), tween(fade));
         }
-        if let Some((filter, behind)) = &mut self.shadow {
-            filter.set_cutoff(Directional::cutoff(at, *behind), tween(fade));
+        self.at = *at;
+        self.filter_to(fade);
+    }
+
+    /// Glides its sounds' cutoff to `cutoff` hertz over `fade` seconds, as heard through a wall
+    /// or a doorway ([`Outside::OPEN`]: not muffled, the default). A directional emitter's head
+    /// shadow still closes it further behind.
+    pub fn muffle(&mut self, cutoff: Real, fade: Real) {
+        let cutoff = cutoff.clamp(20.0, Outside::OPEN);
+        if cutoff != self.muffle {
+            self.muffle = cutoff;
+            self.filter_to(fade);
+        }
+    }
+
+    /// The cutoff it is muffled to.
+    pub fn muffled(&self) -> Real {
+        self.muffle
+    }
+
+    fn filter_to(&mut self, fade: Real) {
+        let shadow = self.behind.map_or(Outside::OPEN, |behind| {
+            Directional::cutoff(&self.at, behind)
+        });
+        if let Some(filter) = &mut self.filter {
+            filter.set_cutoff(shadow.min(self.muffle), tween(fade));
         }
     }
 
@@ -873,6 +919,19 @@ fn tween(fade: Real) -> Tween {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_emitter_is_muffled_within_hearing_and_opened_again() {
+        let audio = Audio::silent();
+        let mut emitter = audio.emitter(&Vector3::new(0.0, 0.0, -3.0), 1.0, 20.0);
+        assert_eq!(emitter.muffled(), Outside::OPEN);
+        emitter.muffle(600.0, 0.2);
+        assert_eq!(emitter.muffled(), 600.0);
+        emitter.muffle(1.0, 0.2);
+        assert_eq!(emitter.muffled(), 20.0, "never under hearing");
+        emitter.muffle(1e9, 0.0);
+        assert_eq!(emitter.muffled(), Outside::OPEN);
+    }
 
     #[test]
     fn gains_and_decibels_agree() {

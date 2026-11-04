@@ -294,6 +294,60 @@ pub fn cross<'a, G: GpuGeometry>(
         })
 }
 
+/// Where a sound is heard from: see [`heard`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Heard<P> {
+    /// Where to place it, a global point in the ear's realm.
+    pub at: P,
+    /// Whether it comes through an opening (to be muffled), or straight.
+    pub through: bool,
+}
+
+/// Where a sound at `sound` (a global point in `sound_realm`) is heard by an ear at `ear` (in
+/// `ear_realm`): where it is, in the same realm; else from the way through the passable opening
+/// in the ear's realm onto the sound's whose way round is shortest (the ear to the opening's
+/// nearest point, then on from where that point comes out to the sound), placed in the
+/// direction of that point as far as the whole way round, so that it fades with all of it;
+/// `None`, silent, when no such opening joins them. One opening deep.
+pub fn heard<'a, G: Geometry>(
+    portals: impl IntoIterator<Item = &'a Portal<G>>,
+    (ear, ear_realm): (&G::Point, Realm),
+    (sound, sound_realm): (&G::Point, Realm),
+) -> Option<Heard<G::Point>> {
+    if ear_realm == sound_realm {
+        return Some(Heard {
+            at: *sound,
+            through: false,
+        });
+    }
+    let origin = G::origin();
+    portals
+        .into_iter()
+        .filter(|portal| portal.passable)
+        .flat_map(|portal| portal.mouths().collect::<Vec<_>>())
+        .filter(|mouth| mouth.realm == ear_realm && mouth.into == sound_realm)
+        .filter_map(|mouth| {
+            // The opening's point nearest the ear: the ear in its frame, onto its rectangle.
+            let local = G::log(&origin, &G::apply(&mouth.frame.inverse(), ear))?;
+            let [x, y] = mouth.half;
+            let c = |i: usize| G::inner(&origin, &local, &G::origin_frame(i));
+            let on =
+                G::origin_frame(0) * c(0).clamp(-x, x) + G::origin_frame(1) * c(1).clamp(-y, y);
+            let door = G::apply(&mouth.frame, &G::exp(&origin, &on));
+            let beyond = G::apply(&mouth.carry, &door);
+            let (near, far) = (G::distance(ear, &door), G::distance(&beyond, sound));
+            Some((near + far, door, near))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(way, door, near)| {
+            let at = match G::log(ear, &door) {
+                Some(towards) if near > 1e-9 => G::exp(ear, &(towards * (way / near))),
+                _ => door,
+            };
+            Heard { at, through: true }
+        })
+}
+
 /// Every [`Portal`], for whoever moves a body: ask [`cross`](Self::cross) after each step.
 #[derive(SystemParam)]
 pub struct Portals<'w, 's, G: Geometry> {
@@ -306,6 +360,15 @@ impl<G: GpuGeometry> Portals<'_, '_, G> {
     /// [`Realm`] on the body.
     pub fn cross(&self, realm: Realm, from: &G::Point, to: &G::Point) -> Option<Crossing<G>> {
         cross(self.portals.iter(), realm, from, to)
+    }
+
+    /// Where a sound in `sound`'s realm is heard by an ear in `ear`'s: [`heard`].
+    pub fn heard(
+        &self,
+        ear: (&G::Point, Realm),
+        sound: (&G::Point, Realm),
+    ) -> Option<Heard<G::Point>> {
+        heard(self.portals.iter(), ear, sound)
     }
 
     /// Every portal.
@@ -442,5 +505,37 @@ mod tests {
         let on = E3::embed_point(&Point3::new(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0));
         assert!(form.dot(&on).abs() < 1e-12);
         assert!(form.dot(&E3::embed_point(&Point3::origin())).abs() > 0.1);
+    }
+
+    /// A sound in the room is heard by an ear outside from the doorway's side nearest it, as
+    /// far as the way round, and not at all from a realm no opening joins.
+    #[test]
+    fn a_sound_in_the_room_is_heard_through_the_door() {
+        let door = door::<E3>();
+        let ear = Point3::new(3.0, 1.0, 4.0);
+        // In the room, 3 in past its way in (10 along x, -z into it).
+        let inside = Point3::new(10.0, 0.0, -3.0);
+        let through = heard([&door], (&ear, Realm::MAIN), (&inside, door.to)).unwrap();
+        assert!(through.through);
+        // Towards the doorway's nearest point (1, 1, 0), as far as 3² + 4²'s root and the 3
+        // on: the ear to the corner, then the way in.
+        let corner = Point3::new(1.0, 1.0, 0.0);
+        let towards = (corner - ear).normalize();
+        let way = (corner - ear).norm() + (Point3::new(11.0, 1.0, 0.0) - inside).norm();
+        assert!(
+            (through.at - (ear + towards * way)).norm() < 1e-9,
+            "{:?}",
+            through.at
+        );
+        // In the same realm, where it is.
+        let here = heard([&door], (&ear, Realm::MAIN), (&ear, Realm::MAIN)).unwrap();
+        assert!(!here.through && here.at == ear);
+        // From a realm nothing opens onto, or through a window, silent.
+        assert!(heard([&door], (&ear, Realm::MAIN), (&inside, Realm(7))).is_none());
+        let window = door.clone().window();
+        assert!(heard([&window], (&ear, Realm::MAIN), (&inside, door.to)).is_none());
+        // From inside, the open way back carries what is outside in.
+        let back = heard([&door], (&inside, door.to), (&ear, Realm::MAIN)).unwrap();
+        assert!(back.through);
     }
 }

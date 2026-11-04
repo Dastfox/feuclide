@@ -34,7 +34,7 @@ use fk_geometry::Geometry;
 pub use camera::{ActiveView, Camera, DrawnView, Spectator, ViewRelative, update_view_relative};
 pub use chart::{ChartTag, Letter};
 pub use origin::{FloatingOrigin, rebase};
-pub use portal::{Crossing, Mouth, Portal, Portals, cross, form_through, plane_form};
+pub use portal::{Crossing, Heard, Mouth, Portal, Portals, cross, form_through, heard, plane_form};
 pub use pose::{GlobalPose, Pose, Velocity, integrate_velocities};
 pub use propagate::propagate_poses;
 pub use realm::{GlobalRealm, Realm, Realms};
