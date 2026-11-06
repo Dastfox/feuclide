@@ -9,6 +9,15 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 
 ## Unreleased
 
+## 2026-11-06
+
+fk-audio 0.3.1, fk-scene 0.3.1, fk-shaders 0.3.0, fk-render 0.4.0, feuclide 0.4.0, fk-assets 0.4.0,
+fk-flat 0.4.0, fk-sky 0.4.0, fk-ui 0.4.0
+
+- Release: fk-shaders 0.3.0 and fk-render 0.4.0 with every crate on it, for the spots' shadows
+  (breaking: the lighting uniform's `PointLight` and `spot_shadow`, `FrameView::spots`,
+  `RendererSetup::spot_layout`, `fk::paint`'s `point_light_reach`); fk-scene 0.3.1 and fk-audio
+  0.3.1 for the sounds heard through portals and the streamed sounds.
 - fk-scene: `heard` (and `Portals::heard`), where a sound in another realm is heard from: the
   way through the passable opening joining the two realms that is shortest, placed towards it
   as far as the whole way round, or nothing with none. fk-audio: `Emitter::muffle`, its sounds'
