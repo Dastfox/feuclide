@@ -25,6 +25,7 @@ toml.workspace = true
 toml_edit.workspace = true
 eframe.workspace = true
 egui.workspace = true
+rfd.workspace = true
 
 [lints]
 workspace = true

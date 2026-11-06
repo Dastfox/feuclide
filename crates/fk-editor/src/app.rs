@@ -1,6 +1,6 @@
 //! The editor's window: the panes laid out, the menus, the shortcuts, the scene file.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::Options;
 use crate::core::{EditorWorld, Selection, ThingId};
@@ -63,11 +63,28 @@ struct Capture {
     done: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// The key under which the editor's storage keeps the last tuning folder used.
+const TUNING_DIR_KEY: &str = "tuning_dir";
+
+/// Keeps `dir` as the tuning folder to open next time, made absolute, if it is a folder.
+fn remember_tuning_dir(storage: &mut dyn eframe::Storage, dir: &Path) {
+    if let Ok(dir) = std::path::absolute(dir)
+        && dir.is_dir()
+    {
+        eframe::set_value(storage, TUNING_DIR_KEY, &dir);
+    }
+}
+
 impl Editor {
     fn new(cc: &eframe::CreationContext<'_>, options: Options) -> Self {
         cc.egui_ctx.set_theme(egui::Theme::Dark);
+        let remembered = cc
+            .storage
+            .and_then(|storage| eframe::get_value::<PathBuf>(storage, TUNING_DIR_KEY))
+            .filter(|dir| dir.is_dir());
         let tuning_dir = options
             .tuning
+            .or(remembered)
             .or_else(|| std::env::var_os("FK_TUNING_DIR").map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("assets/tuning"));
         let scene_path = options
@@ -204,6 +221,29 @@ impl Editor {
         }
     }
 
+    /// The system's folder dialog, from the folder shown; the folder chosen is shown in the
+    /// tuning pane and kept for next time at once.
+    fn pick_tuning_folder(&mut self, frame: &mut eframe::Frame) {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Tuning folder")
+            .set_parent(&*frame);
+        if let Ok(dir) = std::path::absolute(self.tuning.dir())
+            && dir.is_dir()
+        {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(dir) = dialog.pick_folder() else {
+            return;
+        };
+        self.tuning.set_dir(dir);
+        self.middle = Middle::Tuning;
+        self.status = format!("tuning from {}", self.tuning.dir().display());
+        if let Some(storage) = frame.storage_mut() {
+            remember_tuning_dir(storage, self.tuning.dir());
+            storage.flush();
+        }
+    }
+
     fn delete_selection(&mut self) {
         let selected = self.editor.world.resource::<Selection>().0.clone();
         for id in selected {
@@ -312,6 +352,18 @@ impl Editor {
                     self.save();
                     ui.close();
                 }
+                ui.separator();
+                if ui
+                    .add_enabled(
+                        !self.tuning.dirty(),
+                        egui::Button::new("Open tuning folder…"),
+                    )
+                    .on_disabled_hover_text("Save or revert the open tuning file first.")
+                    .clicked()
+                {
+                    self.tuning.wants_folder = true;
+                    ui.close();
+                }
             });
             ui.menu_button("Edit", |ui| {
                 let (back, forward) = self.history.depth();
@@ -350,7 +402,11 @@ impl Editor {
 }
 
 impl eframe::App for Editor {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        remember_tuning_dir(storage, self.tuning.dir());
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.shortcuts(&ctx);
         self.capture_step(&ctx);
@@ -403,5 +459,8 @@ impl eframe::App for Editor {
         let gesture = ctx.input(|i| i.pointer.any_down()) || ctx.egui_wants_keyboard_input();
         self.history.observe(&now, gesture);
         self.last = Some(now);
+        if std::mem::take(&mut self.tuning.wants_folder) {
+            self.pick_tuning_folder(frame);
+        }
     }
 }

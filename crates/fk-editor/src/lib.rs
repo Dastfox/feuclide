@@ -14,7 +14,8 @@
 //! - **Undo.** By whole-scene snapshots: every edit, from any pane or the gizmo, is undone alike.
 //! - **Tuning.** A folder of [`fk_app::tuning`] files, every value a field, edited with the
 //!   files' comments and layout kept. With "Live", each edit is saved as it ends, and an app run
-//!   with `FK_TUNING_DIR` set to that folder reloads it at once.
+//!   with `FK_TUNING_DIR` set to that folder reloads it at once. The folder is picked in the
+//!   editor ("Open folder…") and opened again next time.
 //!
 //! Only E³ scenes are edited for now.
 //!
@@ -40,8 +41,10 @@ pub struct Options {
     /// The scene file: read if it exists, and where the scene is saved. `scene.toml` in the
     /// working directory when none is given; an example scene is shown until one is read.
     pub scene: Option<PathBuf>,
-    /// The folder of tuning files. `FK_TUNING_DIR` when none is given, then `assets/tuning`
-    /// in the working directory.
+    /// The folder of tuning files. When none is given, the last one used (kept in the editor's
+    /// storage when it closes or a folder is picked), then `FK_TUNING_DIR`, then
+    /// `assets/tuning` in the working directory. Another is picked in the editor with the
+    /// system's folder dialog.
     pub tuning: Option<PathBuf>,
 }
 

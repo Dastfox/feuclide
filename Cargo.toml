@@ -62,10 +62,12 @@ wgpu = { version = "30.0.1", features = ["naga-ir"] }
 tiny-skia = { version = "0.11.4", default-features = false, features = ["std", "simd"] }
 ab_glyph = "0.2.32"
 # The editor (fk-editor): egui 0.37 is on wgpu 30 and winit 0.30, as the engine is; toml_edit
-# edits tuning files keeping their comments.
+# edits tuning files keeping their comments; rfd is the system's folder dialog (on Linux through
+# the desktop portal, no GTK to build against).
 eframe = { version = "0.37.0", default-features = false, features = ["wgpu", "default_fonts", "persistence", "x11", "wayland"] }
 egui = "0.37.0"
 toml_edit = "0.25.15"
+rfd = "0.17.2"
 naga = "30.0.1"
 naga_oil = { version = "0.23.0", default-features = false }
 encase = "0.13.0"

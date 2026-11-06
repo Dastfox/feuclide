@@ -5,7 +5,8 @@ use std::path::PathBuf;
 const USAGE: &str = "usage: fk-editor [scene.toml] [--tuning <folder>]
 
   scene.toml   the scene to open and save to (default: scene.toml here)
-  --tuning     the folder of TOML tuning files (default: FK_TUNING_DIR, then assets/tuning)";
+  --tuning     the folder of TOML tuning files (default: the last one used, then
+               FK_TUNING_DIR, then assets/tuning; File > Open tuning folder… picks another)";
 
 fn main() -> eframe::Result {
     let mut options = fk_editor::Options::default();

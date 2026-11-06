@@ -18,6 +18,9 @@ pub struct Tuning {
     filter: String,
     /// Writes the file whenever an edit ends.
     pub live: bool,
+    /// Asked for another folder ("Open folder…"): the window answers with the system's folder
+    /// dialog and [`Tuning::set_dir`].
+    pub wants_folder: bool,
     message: String,
 }
 
@@ -43,10 +46,41 @@ impl Tuning {
             open: None,
             filter: String::new(),
             live: false,
+            wants_folder: false,
             message: String::new(),
         };
         tuning.rescan();
         tuning
+    }
+
+    /// The folder shown.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Shows the files of another folder, closing the open one.
+    pub fn set_dir(&mut self, dir: PathBuf) {
+        self.dir = dir;
+        self.open = None;
+        self.filter.clear();
+        self.message.clear();
+        self.rescan();
+    }
+
+    /// Whether the open file has edits not saved: the folder is not changed then.
+    pub fn dirty(&self) -> bool {
+        self.open.as_ref().is_some_and(OpenFile::dirty)
+    }
+
+    /// The "Open folder…" button, off while the open file has edits not saved.
+    fn open_folder_button(&mut self, ui: &mut egui::Ui) {
+        if ui
+            .add_enabled(!self.dirty(), egui::Button::new("Open folder…"))
+            .on_disabled_hover_text("Save or revert the open file first.")
+            .clicked()
+        {
+            self.wants_folder = true;
+        }
     }
 
     fn rescan(&mut self) {
@@ -110,6 +144,7 @@ impl Tuning {
         }
         ui.horizontal(|ui| {
             ui.heading("Tuning");
+            self.open_folder_button(ui);
             ui.weak(self.dir.display().to_string());
         });
         ui.separator();
@@ -140,8 +175,14 @@ impl Tuning {
             });
         let gesture = ui.input(|i| i.pointer.any_down()) || ui.ctx().egui_wants_keyboard_input();
         egui::CentralPanel::default().show(ui, |ui| {
+            if self.open.is_none() && self.files.is_empty() {
+                ui.weak("No tuning files in this folder.");
+                self.open_folder_button(ui);
+            }
             let Some(open) = &mut self.open else {
-                ui.weak("Pick a file. An app run with FK_TUNING_DIR set to this folder reloads each file as it is saved.");
+                if !self.files.is_empty() {
+                    ui.weak("Pick a file. An app run with FK_TUNING_DIR set to this folder reloads each file as it is saved.");
+                }
                 if !self.message.is_empty() {
                     ui.colored_label(egui::Color32::LIGHT_RED, &self.message);
                 }

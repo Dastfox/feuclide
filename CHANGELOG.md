@@ -13,6 +13,9 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
   view seen through portals from its realm draws, carried where the portals on the way carry
   it, unshadowed there; `PortalView::through`, the realms and eyes of the views it is seen
   through (breaking for code building a `PortalView` by hand).
+- fk-editor: the tuning folder picked in the editor with the system's folder dialog ("Open
+  folder…", File > Open tuning folder…), and the last one used opened by default next time
+  (before `FK_TUNING_DIR`; `--tuning` still wins).
 
 ## 2026-11-06
 

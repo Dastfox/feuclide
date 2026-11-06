@@ -19,7 +19,7 @@ the umbrella's `editor` feature).
 | left   | Scene                    | Every thing by its hierarchy. Click to select, drag a row onto another to hang it there, "+ Add" for shapes and lights. |
 | right  | Properties / Environment | Name, place and turn (relative to the parent), shape and sizes, colour, point light. The scene's lighting: sun, sky, fog, bands. |
 | middle | Viewport                 | The scene drawn by the engine's own renderer (`fk_render::Offscreen`). Orbit, pan, zoom, fly; click to select; drag a gizmo arrow to move. |
-| middle | Tuning                   | A folder of `fk_app::tuning` TOML files, every value a field, comments kept and shown as tooltips, `0xRRGGBB` colours as colour pickers. "Live" saves as each edit ends: an app run with `FK_TUNING_DIR` set to that folder reloads it at once. |
+| middle | Tuning                   | A folder of `fk_app::tuning` TOML files, every value a field, comments kept and shown as tooltips, `0xRRGGBB` colours as colour pickers. "Live" saves as each edit ends: an app run with `FK_TUNING_DIR` set to that folder reloads it at once. "Open folder…" (or File > Open tuning folder…) picks the folder; the last one used opens next time, unless `--tuning` names another. |
 
 Scenes are TOML: the lighting and every thing with its parent, readable and editable by hand.
 Only E³ scenes are edited for now.
