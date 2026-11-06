@@ -4,6 +4,8 @@
 
 pub use fk_app as app;
 pub use fk_audio as audio;
+#[cfg(feature = "editor")]
+pub use fk_editor as editor;
 pub use fk_geometry as geometry;
 pub use fk_geometry_euclidean as euclidean;
 pub use fk_math as math;

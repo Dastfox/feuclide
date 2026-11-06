@@ -24,6 +24,11 @@ fk-render.workspace = true
 fk-physics.workspace = true
 fk-audio.workspace = true
 fk-quotient.workspace = true
+fk-editor = { workspace = true, optional = true }
+
+[features]
+# The editor as `feuclide::editor`: scene tree, properties, a viewport drawn by the engine.
+editor = ["dep:fk-editor"]
 
 [lints]
 workspace = true

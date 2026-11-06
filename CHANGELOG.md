@@ -9,6 +9,12 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 
 ## Unreleased
 
+- fk-editor: an editor for scenes and tuning files, after the Bevy editor prototypes: a scene
+  tree, properties and environment panes, a viewport drawn by `Offscreen` with picking, the
+  selection outlined and a gizmo to move it, TOML scene files, undo by whole-scene snapshots, and
+  a tuning pane editing `fk_app::tuning` folders with their comments kept, saved live into a
+  running app. feuclide: the `editor` feature re-exports it as `feuclide::editor`.
+
 ## 2026-11-06
 
 fk-audio 0.3.1, fk-scene 0.3.1, fk-shaders 0.3.0, fk-render 0.4.0, feuclide 0.4.0, fk-assets 0.4.0,
