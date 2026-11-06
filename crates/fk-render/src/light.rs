@@ -48,6 +48,16 @@ impl PointLight {
     }
 }
 
+/// Beside a [`PointLight`], lights what is seen through portals from its realm too: in every
+/// view seen through a [`Portal`](fk_scene::Portal) from a view of its realm, it stands where
+/// the portals on the way carry it, so that a lamp carried by the eye lights the room seen
+/// through a doorway as it will once the eye is through. Its light there is cut by nothing but
+/// the opening (what a view seen through a portal draws lies beyond it) and casts no shadow: a
+/// spot's map ([`SpotShadow`](crate::SpotShadow)) holds its own realm only. Without it a light
+/// lights its own realm alone.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShinesThrough;
+
 /// Beside a [`PointLight`], gathers its light into a cone along its frame's `−origin_frame(2)`
 /// (the way a camera looks): whole within `inner` of that axis, fading out to nothing at
 /// `outer` (half-angles, in radians).

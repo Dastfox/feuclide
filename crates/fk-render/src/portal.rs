@@ -155,6 +155,11 @@ pub struct PortalView<G: Geometry> {
     pub shadows: bool,
     /// How far it sees, in place of the camera's far.
     pub far: Option<Real>,
+    /// The views it is seen through, by their realms and eyes, the frame's own first: what
+    /// stands in one of them stands relative to its eye as, carried through the portals on the
+    /// way, it stands relative to this view's, so their [`ShinesThrough`](crate::ShinesThrough)
+    /// lights light it. Empty for the frame's own.
+    pub through: Vec<(Realm, G::Isometry)>,
 }
 
 impl<G: Geometry> Clone for PortalView<G> {
@@ -170,6 +175,7 @@ impl<G: Geometry> Clone for PortalView<G> {
             pixels: self.pixels,
             shadows: self.shadows,
             far: self.far,
+            through: self.through.clone(),
         }
     }
 }
@@ -187,6 +193,7 @@ impl<G: Geometry> std::fmt::Debug for PortalView<G> {
             .field("pixels", &self.pixels)
             .field("shadows", &self.shadows)
             .field("far", &self.far)
+            .field("through", &self.through)
             .finish()
     }
 }
@@ -302,6 +309,7 @@ pub(crate) fn portal_views<G: GpuGeometry>(
         pixels: Real::from(lens.size[0]) * Real::from(lens.size[1]),
         shadows: true,
         far: None,
+        through: Vec::new(),
     }];
     // What cuts each view because a nearer mouth hides the one it is seen through.
     let mut hidden: Vec<Vec<Region>> = vec![Vec::new()];
@@ -355,6 +363,8 @@ pub(crate) fn portal_views<G: GpuGeometry>(
                 }
             }
             views[parent].cuts.push(mouth.region.clone());
+            let mut through = views[parent].through.clone();
+            through.push((views[parent].realm, views[parent].eye));
             views.push(PortalView {
                 eye: opening.mouth.carry.compose(&views[parent].eye),
                 realm: opening.mouth.into,
@@ -366,6 +376,7 @@ pub(crate) fn portal_views<G: GpuGeometry>(
                 pixels: mouth.pixels,
                 shadows: opening.shadows,
                 far: opening.far,
+                through,
             });
             hidden.push(cut_by);
             corners.push(Some(mouth.corners));
@@ -712,6 +723,7 @@ mod tests {
             pixels: 1.0,
             shadows: true,
             far: None,
+            through: Vec::new(),
         };
         assert!(!view.drops(&at(3.0, 3.0, -10.0), 1.0));
         assert!(view.drops(&at(-3.0, 3.0, -10.0), 1.0), "out of the region");

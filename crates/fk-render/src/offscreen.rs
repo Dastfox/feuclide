@@ -186,7 +186,7 @@ impl<G: GpuGeometry> Offscreen<G> {
             height,
             scale_factor: 1.0,
         };
-        let blocks = frame_blocks(world, Some(&active), lighting, None, 1, size);
+        let blocks = frame_blocks(world, Some(&active), &[], lighting, None, 1, size);
         self.frame.write(&self.gpu.queue, &blocks);
         let gpu = &self.gpu;
         let mut renderers: Vec<&mut dyn GeometryRenderer<G>> = Vec::new();

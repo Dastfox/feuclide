@@ -26,7 +26,7 @@ use crate::frame::{
 };
 use crate::gpu::{Vec2f, Vec4f, matrix_columns};
 use crate::late::DepthResolve;
-use crate::light::{MAX_POINT_LIGHTS, PointLight, Spot};
+use crate::light::{MAX_POINT_LIGHTS, PointLight, ShinesThrough, Spot};
 use crate::mesh::tangent;
 use crate::overlay::{Overlay, OverlayPass};
 use crate::parting::Parting;
@@ -811,6 +811,7 @@ impl<G: GpuGeometry> RenderState<G> {
         let mut blocks = frame_blocks(
             world,
             view.as_ref(),
+            &[],
             &lighting,
             shadow.as_ref(),
             self.shadow_map.size,
@@ -1291,6 +1292,7 @@ impl<G: GpuGeometry> RenderState<G> {
         let mut blocks = frame_blocks(
             world,
             Some(&seen),
+            &[],
             lighting,
             shadow.as_ref(),
             self.shadow_map.size,
@@ -1448,6 +1450,7 @@ impl<G: GpuGeometry> RenderState<G> {
         let mut blocks = frame_blocks(
             world,
             Some(&eye),
+            &seen.through,
             lighting,
             shadow.as_ref(),
             self.shadow_map.size,
@@ -1714,10 +1717,12 @@ pub(crate) struct FrameBlocks {
 }
 
 /// The blocks of bind group 0 for a frame drawn from `view` in a target of `size`, with the
-/// shadow map `shadow` (`shadow_texels` across) when shadows are drawn.
+/// shadow map `shadow` (`shadow_texels` across) when shadows are drawn, lit too by the
+/// [`ShinesThrough`] lights of the views it is seen through (`through`, [`chosen_lights`]).
 pub(crate) fn frame_blocks<G: GpuGeometry>(
     world: &World,
     view: Option<&ActiveView<G>>,
+    through: &[(fk_scene::Realm, G::Isometry)],
     lighting: &Lighting,
     shadow: Option<&ShadowView>,
     shadow_texels: u32,
@@ -1785,7 +1790,7 @@ pub(crate) fn frame_blocks<G: GpuGeometry>(
     };
     let star_frame =
         [Vector3::x(), Vector3::y(), Vector3::z()].map(|axis| in_eye(&(star_turn * axis), 0.0));
-    let (point_lights, point_count) = point_lights::<G>(world, view);
+    let (point_lights, point_count) = point_lights::<G>(world, view, through);
     let extra = world
         .get_resource::<SkyDiscs>()
         .map_or(&[][..], |discs| &discs.0[..]);
@@ -1895,14 +1900,21 @@ pub(crate) struct ChosenLight<G: GpuGeometry> {
     pub at: G::Point,
     pub light: PointLight,
     pub spot: Option<(fk_math::nalgebra::Vector4<Real>, Spot)>,
+    /// Whether it shines from a view this one is seen through ([`ShinesThrough`]): its own
+    /// realm's spot map does not hold this view's.
+    pub carried: bool,
 }
 
 /// The point lights of the eye's realm that reach nearest the eye, at most
 /// [`MAX_POINT_LIGHTS`], made relative to it in f64 (`eye⁻¹ ∘ light`), in the order the
-/// lighting block holds them: the raster's masks are read against the same choice.
+/// lighting block holds them: the raster's masks are read against the same choice. With them,
+/// for a view seen through portals, the [`ShinesThrough`] lights of the views it is seen
+/// through (`through`, their realms and eyes), each relative to its own view's eye, which is
+/// where the portals on the way carry it relative to this one's.
 pub(crate) fn chosen_lights<G: GpuGeometry>(
     world: &World,
     view: Option<&ActiveView<G>>,
+    through: &[(fk_scene::Realm, G::Isometry)],
 ) -> Vec<ChosenLight<G>> {
     let (Some(view), Some(mut query)) = (
         view,
@@ -1912,16 +1924,32 @@ pub(crate) fn chosen_lights<G: GpuGeometry>(
     };
     let origin = G::origin();
     let to_eye = view.eye.isometry.inverse();
+    // The eye each light is seen from: its own realm's, or the nearest view's it shines through.
+    let carried: Vec<(fk_scene::Realm, G::Isometry)> = through
+        .iter()
+        .filter(|(realm, _)| *realm != view.realm)
+        .map(|(realm, eye)| (*realm, eye.inverse()))
+        .collect();
     let mut lights: Vec<_> = query
         .iter(world)
         .filter(|(_, _, light)| light.range > 0.0 && light.intensity > 0.0)
-        .filter(|(entity, ..)| {
-            world
-                .get::<fk_scene::GlobalRealm>(*entity)
-                .map_or(fk_scene::Realm::MAIN, |realm| realm.0)
-                == view.realm
+        .filter_map(|(entity, pose, light)| {
+            let realm = world
+                .get::<fk_scene::GlobalRealm>(entity)
+                .map_or(fk_scene::Realm::MAIN, |realm| realm.0);
+            if realm == view.realm {
+                return Some((entity, pose, light, to_eye, false));
+            }
+            if carried.is_empty() || world.get::<ShinesThrough>(entity).is_none() {
+                return None;
+            }
+            carried
+                .iter()
+                .rev()
+                .find(|(theirs, _)| *theirs == realm)
+                .map(|(_, to_theirs)| (entity, pose, light, *to_theirs, true))
         })
-        .map(|(entity, pose, light)| {
+        .map(|(entity, pose, light, to_eye, carried)| {
             let relative = to_eye.compose(&pose.isometry);
             let at = G::apply(&relative, &origin);
             // Looked up apart: a query asking for a component no entity ever had finds nothing.
@@ -1931,18 +1959,19 @@ pub(crate) fn chosen_lights<G: GpuGeometry>(
             });
             // How far short of the eye its light stops: the nearest reach first.
             let short = G::distance(&origin, &at) - light.range;
-            (short, entity, at, *light, spot)
+            (short, entity, at, *light, spot, carried)
         })
         .collect();
     lights.sort_by(|a, b| a.0.total_cmp(&b.0));
     lights
         .into_iter()
         .take(MAX_POINT_LIGHTS)
-        .map(|(_, entity, at, light, spot)| ChosenLight {
+        .map(|(_, entity, at, light, spot, carried)| ChosenLight {
             entity,
             at,
             light,
             spot,
+            carried,
         })
         .collect()
 }
@@ -1951,9 +1980,10 @@ pub(crate) fn chosen_lights<G: GpuGeometry>(
 fn point_lights<G: GpuGeometry>(
     world: &World,
     view: Option<&ActiveView<G>>,
+    through: &[(fk_scene::Realm, G::Isometry)],
 ) -> ([PointLightBlock; MAX_POINT_LIGHTS], usize) {
     let mut blocks = [PointLightBlock::default(); MAX_POINT_LIGHTS];
-    let chosen = chosen_lights(world, view);
+    let chosen = chosen_lights(world, view, through);
     let count = chosen.len();
     let maps = world.get_resource::<SpotLit>();
     for (block, chosen) in blocks.iter_mut().zip(chosen) {
@@ -1962,10 +1992,12 @@ fn point_lights<G: GpuGeometry>(
             at,
             light,
             spot,
+            carried,
         } = chosen;
         // Its map, from the eye's coordinates to the light's as the map was drawn from, then
-        // the map's projection.
-        let (shadow_matrix, shadow) = match (maps.and_then(|maps| maps.of(entity)), view) {
+        // the map's projection; none carried through a portal, its map holding another realm.
+        let tile = maps.filter(|_| !carried).and_then(|maps| maps.of(entity));
+        let (shadow_matrix, shadow) = match (tile, view) {
             (Some(tile), Some(view)) => (
                 matrix_columns(&tile.matrix::<G>(&view.eye.isometry)).map(Vec4f),
                 Vec4f([(tile.layer + 1) as f32, tile.offset as f32, 0.0, 0.0]),
@@ -2088,7 +2120,97 @@ mod tests {
             height: 48,
             scale_factor: 1.0,
         };
-        frame_blocks(world, Some(&active), &Lighting::default(), None, 1, size)
+        frame_blocks(
+            world,
+            Some(&active),
+            &[],
+            &Lighting::default(),
+            None,
+            1,
+            size,
+        )
+    }
+
+    /// A view seen through a portal is lit by its own realm's lights and by the
+    /// [`ShinesThrough`] lights of the view it is seen through, those where the portal carries
+    /// them (relative to that view's eye), and with no spot map; never by the others.
+    #[test]
+    fn lights_shine_through_portals() {
+        use fk_geometry_euclidean::Se3;
+        use fk_math::nalgebra::{UnitQuaternion, Vector3};
+        use fk_scene::{GlobalRealm, Realm};
+        let at = |x: Real, y: Real, z: Real| Se3 {
+            rotation: UnitQuaternion::identity(),
+            translation: Vector3::new(x, y, z),
+        };
+        let mut world = World::new();
+        let room = Realm(1);
+        // Outside: his lamp a metre ahead of his eye, carried through; a lamp left behind.
+        let outside_eye = at(10.0, 0.0, 0.0);
+        let lamp = world
+            .spawn((
+                GlobalPose::<E3>::new(at(10.0, 0.0, -1.0)),
+                PointLight::default(),
+                ShinesThrough,
+            ))
+            .id();
+        world.spawn((
+            GlobalPose::<E3>::new(at(11.0, 0.0, 0.0)),
+            PointLight::default(),
+        ));
+        // In the room, 300 m over: its own lamp.
+        let room_lamp = world
+            .spawn((
+                GlobalPose::<E3>::new(at(0.0, 300.0, -2.0)),
+                PointLight::default(),
+                GlobalRealm(room),
+            ))
+            .id();
+        let seen = ActiveView {
+            entity: world.spawn_empty().id(),
+            camera: Camera::<E3>::new(1.0, 0.1, 100.0),
+            eye: GlobalPose::new(at(0.0, 300.0, 0.0)),
+            realm: room,
+        };
+        let chosen = |through: &[(Realm, Isometry)]| -> Vec<_> {
+            chosen_lights::<E3>(&world, Some(&seen), through)
+                .into_iter()
+                .map(|light| (light.entity, light.at, light.carried))
+                .collect()
+        };
+        let own = chosen(&[]);
+        assert_eq!(own.len(), 1, "its own realm's alone");
+        assert_eq!((own[0].0, own[0].2), (room_lamp, false));
+        let through = chosen(&[(Realm::MAIN, outside_eye)]);
+        assert_eq!(
+            through.len(),
+            2,
+            "and the lamp shining through, not the other"
+        );
+        let (_, lamp_at, carried) = through.iter().find(|l| l.0 == lamp).unwrap();
+        assert!(carried);
+        assert!(
+            (lamp_at.coords - Vector3::new(0.0, 0.0, -1.0)).norm() < 1e-9,
+            "{lamp_at:?}"
+        );
+        let blocks = {
+            let size = WindowSize {
+                width: 64,
+                height: 48,
+                scale_factor: 1.0,
+            };
+            let through = [(Realm::MAIN, outside_eye)];
+            frame_blocks(
+                &world,
+                Some(&seen),
+                &through,
+                &Lighting::default(),
+                None,
+                1,
+                size,
+            )
+        };
+        assert_eq!(blocks.lighting.point_count.0[0] as usize, 2);
     }
 
     #[test]

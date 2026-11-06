@@ -1984,7 +1984,15 @@ fn sdf_color(q: vec3<f32>) -> vec3<f32> {
             height,
             scale_factor: 1.0,
         };
-        let blocks = frame_blocks(&world, Some(&active), &Lighting::default(), None, 1, size);
+        let blocks = frame_blocks(
+            &world,
+            Some(&active),
+            &[],
+            &Lighting::default(),
+            None,
+            1,
+            size,
+        );
         frame.write(&gpu.queue, &blocks);
 
         let texture = |format, usage| {

@@ -9,6 +9,11 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 
 ## Unreleased
 
+- fk-render: `ShinesThrough`, beside a `PointLight` (and its `Spot`): it lights too what each
+  view seen through portals from its realm draws, carried where the portals on the way carry
+  it, unshadowed there; `PortalView::through`, the realms and eyes of the views it is seen
+  through (breaking for code building a `PortalView` by hand).
+
 ## 2026-11-06
 
 fk-editor 0.1.0, feuclide 0.4.1

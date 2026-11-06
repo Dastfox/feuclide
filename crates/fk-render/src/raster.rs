@@ -824,9 +824,13 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
         // The same choice as the lighting block's for this view.
         self.lights.clear();
         self.lights.extend(
-            crate::graph::chosen_lights::<G>(world, Some(view.view))
-                .into_iter()
-                .map(|chosen| (chosen.at, chosen.light.range)),
+            crate::graph::chosen_lights::<G>(
+                world,
+                Some(view.view),
+                view.kept.map_or(&[][..], |seen| &seen.through),
+            )
+            .into_iter()
+            .map(|chosen| (chosen.at, chosen.light.range)),
         );
         // In a quotient, each deck translate `γ` made relative to the eye drawing, `D⁻¹ ∘ γ ∘ D`:
         // what carries a pose relative to that eye to its copy's.
@@ -1372,7 +1376,7 @@ mod tests {
             height,
             scale_factor: 1.0,
         };
-        let blocks = frame_blocks(world, Some(&active), lighting, None, 1, size);
+        let blocks = frame_blocks(world, Some(&active), &[], lighting, None, 1, size);
         frame.write(&gpu.queue, &blocks);
         pipeline.prepare(gpu, world, &view);
         pipeline.queue(gpu, &view);
