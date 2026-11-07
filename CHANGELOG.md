@@ -16,6 +16,12 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 - fk-editor: the tuning folder picked in the editor with the system's folder dialog ("Open
   folder…", File > Open tuning folder…), and the last one used opened by default next time
   (before `FK_TUNING_DIR`; `--tuning` still wins).
+- fk-audio: a mix the app drives apart from the player's `Volumes` (`Mix`, each channel's gain
+  and low-pass, gliding: states of the mix, ducks); a `Limiter` on the main track so that sounds
+  piling up never clip (on by default: −3 dB, 20:1, 1 ms, 150 ms); emitters in any channel,
+  outside or in its room (`Audio::placed`, `Placing`); and `Air`, an emitter's sounds dulled
+  with its distance, open at its near, closing to `Air::far` hertz at its far (none by default),
+  `Emitter::cutoff` the shadow, the air and the muffle together.
 
 ## 2026-11-06
 

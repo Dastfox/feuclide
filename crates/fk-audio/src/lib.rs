@@ -25,6 +25,13 @@
 //! the channels no meaning: a game sorts its sounds into them (its world, its player's body)
 //! for the player to set apart.
 //!
+//! Apart from the player's [`Volumes`], the app drives a [`Mix`]: each channel's gain and a
+//! low-pass on it, gliding, multiplied with its volume, to make room for one sound by stepping
+//! the others back (a state of the mix, a duck). Everything goes out through a [`Limiter`], so
+//! that sounds piling up never clip. An [`Emitter`] may play in any channel
+//! ([`Audio::placed`], [`Placing`]), and its sounds are dulled with its distance as the
+//! [`Air`] says, open within its `near` and closing to [`Air::far`] hertz at its `far`.
+//!
 //! A sound may also be made as it plays ([`Audio::stream`]): the app's own code fills each block
 //! of frames on the audio thread (a synthesizer, a music engine), until its [`Stream`] is
 //! dropped.
@@ -34,7 +41,7 @@
 //! `kira`; nothing of it shows through this API.
 
 use std::io::Cursor;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -42,15 +49,17 @@ use bevy_ecs::prelude::*;
 use fk_app::{App, Plugin, Update};
 use fk_math::Real;
 use fk_math::nalgebra::Vector3;
+use kira::effect::compressor::{CompressorBuilder, CompressorHandle};
 use kira::effect::filter::{FilterBuilder, FilterHandle};
 use kira::effect::reverb::{ReverbBuilder, ReverbHandle};
 use kira::listener::ListenerHandle;
 use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle};
 use kira::sound::{FromFileError, PlaybackState};
+use kira::track::MainTrackBuilder;
 use kira::track::{
     SpatialTrackBuilder, SpatialTrackDistances, SpatialTrackHandle, TrackBuilder, TrackHandle,
 };
-use kira::{AudioManager, AudioManagerSettings, Decibels, DefaultBackend, Mix, Tween};
+use kira::{AudioManager, AudioManagerSettings, Decibels, DefaultBackend, Mix as WetDry, Tween};
 
 pub mod gait;
 pub mod synth;
@@ -59,7 +68,8 @@ mod takes;
 pub use takes::Takes;
 
 /// Opens the default output device as the [`Audio`] resource, unless the app already has one,
-/// and applies the [`Acoustics`] to its room whenever they change.
+/// and applies the [`Acoustics`] to its room, the [`Outside`], the [`Volumes`], the [`Mix`],
+/// the [`Limiter`] and the [`Air`] whenever they change.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AudioPlugin;
 
@@ -75,13 +85,129 @@ impl Plugin for AudioPlugin {
         app.init_resource::<Acoustics>()
             .init_resource::<Outside>()
             .init_resource::<Volumes>()
-            .add_systems(Update, (apply_acoustics, apply_outside, apply_volumes));
+            .init_resource::<Mix>()
+            .init_resource::<Limiter>()
+            .init_resource::<Air>()
+            .add_systems(
+                Update,
+                (
+                    apply_acoustics,
+                    apply_outside,
+                    apply_volumes,
+                    apply_limiter,
+                    apply_air,
+                ),
+            );
     }
 }
 
-fn apply_volumes(audio: Res<Audio>, volumes: Res<Volumes>) {
+fn apply_volumes(audio: Res<Audio>, volumes: Res<Volumes>, mix: Res<Mix>) {
     if volumes.is_changed() {
         audio.set_volumes(&volumes);
+    }
+    if mix.is_changed() {
+        audio.set_mix(&mix);
+    }
+}
+
+fn apply_limiter(audio: Res<Audio>, limiter: Res<Limiter>) {
+    if limiter.is_changed() {
+        audio.set_limiter(&limiter);
+    }
+}
+
+fn apply_air(audio: Res<Audio>, air: Res<Air>) {
+    if air.is_changed() {
+        audio.set_air(&air);
+    }
+}
+
+/// The app's own mix, as a resource: each [`Channel`]'s gain and the cutoff of a low-pass on it,
+/// multiplied with the player's [`Volumes`] (which stay the player's), gliding into a change over
+/// [`fade`](Self::fade) seconds. To step some sounds back for others: a state of the mix, a duck.
+/// The default leaves every channel as it is.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct Mix {
+    /// Each channel's, by its number.
+    pub channels: [Bus; Channel::COUNT],
+    /// Seconds to glide into a change.
+    pub fade: Real,
+}
+
+impl Default for Mix {
+    fn default() -> Self {
+        Self {
+            channels: [Bus::default(); Channel::COUNT],
+            fade: 0.1,
+        }
+    }
+}
+
+/// One channel's part of the [`Mix`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bus {
+    /// Amplitude, 1 unchanged.
+    pub gain: Real,
+    /// Frequencies above this many hertz are cut ([`Outside::OPEN`]: none).
+    pub cutoff: Real,
+}
+
+impl Default for Bus {
+    fn default() -> Self {
+        Self {
+            gain: 1.0,
+            cutoff: Outside::OPEN,
+        }
+    }
+}
+
+/// What everything goes out through, as a resource: a compressor fast and steep enough to keep
+/// sounds piling up from clipping, leaving alone whatever stays under its threshold.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct Limiter {
+    /// Decibels (0 the most the output can take) above which it holds the sound down.
+    pub threshold: Real,
+    /// How hard: each decibel over the threshold comes out as `1 / ratio` of a decibel.
+    pub ratio: Real,
+    /// Seconds it takes to hold a sound down.
+    pub attack: Real,
+    /// Seconds it takes to let go.
+    pub release: Real,
+}
+
+impl Default for Limiter {
+    fn default() -> Self {
+        Self {
+            threshold: -3.0,
+            ratio: 20.0,
+            attack: 0.001,
+            release: 0.15,
+        }
+    }
+}
+
+/// How the air dulls an [`Emitter`]'s sounds with its distance, as a resource: open within its
+/// `near`, the low-pass closing geometrically to [`far`](Self::far) hertz at its `far`. Emitters
+/// follow a change at their next [`Emitter::set_position`]. The default dulls nothing.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct Air {
+    /// The cutoff at an emitter's `far`, in hertz ([`Outside::OPEN`]: none).
+    pub far: Real,
+}
+
+impl Default for Air {
+    fn default() -> Self {
+        Self { far: Outside::OPEN }
+    }
+}
+
+impl Air {
+    /// The cutoff for a sound `distance` away from an emitter heard fully within `near` and not
+    /// at all past `far`.
+    pub fn cutoff(&self, distance: Real, near: Real, far: Real) -> Real {
+        let far_cutoff = self.far.clamp(20.0, Outside::OPEN);
+        let t = ((distance - near) / (far - near).max(1e-6)).clamp(0.0, 1.0);
+        Outside::OPEN * (far_cutoff / Outside::OPEN).powf(t)
     }
 }
 
@@ -209,11 +335,19 @@ struct Output {
     acoustics: Acoustics,
     outside: Outside,
     volumes: Volumes,
+    mix: Mix,
+    /// The limiter on the main track.
+    limiter: Option<CompressorHandle>,
+    /// The [`Air`]'s cutoff at an emitter's far, as `f64` bits, shared with every emitter.
+    air: Arc<AtomicU64>,
 }
 
-/// A channel's tracks: its own, for its volume, and inside it the room and the outside.
+/// A channel's tracks: its own, for its volume and its part of the mix, and inside it the room
+/// and the outside.
 struct Tracks {
     track: TrackHandle,
+    /// The low-pass of its part of the [`Mix`].
+    filter: FilterHandle,
     /// Where the sounds in the room play: a track through the reverb.
     room: Option<(TrackHandle, ReverbHandle)>,
     /// Where the sounds outside play: a track through the low-pass filter.
@@ -221,14 +355,17 @@ struct Tracks {
 }
 
 impl Tracks {
-    /// A channel's tracks in `manager`, set to `acoustics`, `outside` and `gain`.
+    /// A channel's tracks in `manager`, set to `acoustics`, `outside`, `gain` and `bus`.
     fn new(
         manager: &mut AudioManager<DefaultBackend>,
         acoustics: &Acoustics,
         outside: &Outside,
         gain: Real,
+        bus: &Bus,
     ) -> Option<Self> {
-        let track = TrackBuilder::new().volume(decibels_of(gain));
+        let mut track = TrackBuilder::new().volume(decibels_of(gain * bus.gain));
+        let bus_filter =
+            track.add_effect(FilterBuilder::new().cutoff(bus.cutoff.clamp(20.0, Outside::OPEN)));
         let mut track = manager
             .add_sub_track(track)
             .inspect_err(|error| tracing::warn!("no channel, its sounds are lost: {error}"))
@@ -239,7 +376,7 @@ impl Tracks {
                 .feedback(acoustics.size.clamp(0.0, 0.999))
                 .damping(acoustics.damping.clamp(0.0, 1.0))
                 .stereo_width(acoustics.width.clamp(0.0, 1.0))
-                .mix(Mix(acoustics.reverb.clamp(0.0, 1.0) as f32)),
+                .mix(WetDry(acoustics.reverb.clamp(0.0, 1.0) as f32)),
         );
         let room = match track.add_sub_track(room) {
             Ok(room) => Some((room, reverb)),
@@ -260,6 +397,7 @@ impl Tracks {
         };
         Some(Self {
             track,
+            filter: bus_filter,
             room,
             outside,
         })
@@ -275,21 +413,59 @@ impl Output {
             acoustics,
             outside,
             volumes,
+            mix,
             ..
         } = self;
         let index = channel.index();
         let slot = &mut channels[index];
         if slot.is_none() {
-            *slot = Tracks::new(manager, acoustics, outside, volumes.channels[index]);
+            *slot = Tracks::new(
+                manager,
+                acoustics,
+                outside,
+                volumes.channels[index],
+                &mix.channels[index],
+            );
         }
         slot.as_mut()
+    }
+
+    /// Glides every channel's track to its volume times its part of the mix, and its low-pass to
+    /// the mix's cutoff, over `fade` seconds.
+    fn level_channels(&mut self, fade: Real) {
+        let fade = tween(fade);
+        let (volumes, mix) = (self.volumes, self.mix);
+        for (index, tracks) in self.channels.iter_mut().enumerate() {
+            if let Some(tracks) = tracks {
+                let bus = mix.channels[index];
+                tracks
+                    .track
+                    .set_volume(decibels_of(volumes.channels[index] * bus.gain), fade);
+                tracks
+                    .filter
+                    .set_cutoff(bus.cutoff.clamp(20.0, Outside::OPEN), fade);
+            }
+        }
     }
 }
 
 impl Audio {
     /// The default output device, or a [silent](Self::silent) one if it cannot be opened.
     pub fn open() -> Self {
-        match AudioManager::<DefaultBackend>::new(AudioManagerSettings::default()) {
+        let limiter = Limiter::default();
+        let mut main = MainTrackBuilder::new();
+        let compressor = main.add_effect(
+            CompressorBuilder::new()
+                .threshold(limiter.threshold)
+                .ratio(limiter.ratio.max(1.0))
+                .attack_duration(seconds(limiter.attack))
+                .release_duration(seconds(limiter.release)),
+        );
+        let settings = AudioManagerSettings {
+            main_track_builder: main,
+            ..AudioManagerSettings::default()
+        };
+        match AudioManager::<DefaultBackend>::new(settings) {
             Ok(mut manager) => {
                 let origin = mint::Vector3 {
                     x: 0.0,
@@ -308,6 +484,9 @@ impl Audio {
                     acoustics: Acoustics::default(),
                     outside: Outside::default(),
                     volumes: Volumes::default(),
+                    mix: Mix::default(),
+                    limiter: Some(compressor),
+                    air: Arc::new(AtomicU64::new(Air::default().far.to_bits())),
                 };
                 output.channel(Channel::default());
                 Self {
@@ -347,7 +526,7 @@ impl Audio {
                 reverb.set_feedback(acoustics.size.clamp(0.0, 0.999), fade);
                 reverb.set_damping(acoustics.damping.clamp(0.0, 1.0), fade);
                 reverb.set_stereo_width(acoustics.width.clamp(0.0, 1.0), fade);
-                reverb.set_mix(Mix(acoustics.reverb.clamp(0.0, 1.0) as f32), fade);
+                reverb.set_mix(WetDry(acoustics.reverb.clamp(0.0, 1.0) as f32), fade);
             }
         }
     }
@@ -381,16 +560,54 @@ impl Audio {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         output.volumes = *volumes;
-        let fade = tween(volumes.fade);
         output
             .manager
             .main_track()
-            .set_volume(decibels_of(volumes.master), fade);
-        for (tracks, &gain) in output.channels.iter_mut().zip(&volumes.channels) {
-            if let Some(tracks) = tracks {
-                tracks.track.set_volume(decibels_of(gain), fade);
-            }
+            .set_volume(decibels_of(volumes.master), tween(volumes.fade));
+        output.level_channels(volumes.fade);
+    }
+
+    /// Glides each channel to its part of `mix`, multiplied with its volume. [`AudioPlugin`]
+    /// calls it when the [`Mix`] resource changes.
+    pub fn set_mix(&self, mix: &Mix) {
+        let Some(output) = &self.output else {
+            return;
+        };
+        let mut output = output
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        output.mix = *mix;
+        output.level_channels(mix.fade);
+    }
+
+    /// Sets what everything goes out through. [`AudioPlugin`] calls it when the [`Limiter`]
+    /// resource changes.
+    pub fn set_limiter(&self, limiter: &Limiter) {
+        let Some(output) = &self.output else {
+            return;
+        };
+        let mut output = output
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(compressor) = &mut output.limiter {
+            let now = Tween::default();
+            compressor.set_threshold(limiter.threshold, now);
+            compressor.set_ratio(limiter.ratio.max(1.0), now);
+            compressor.set_attack_duration(seconds(limiter.attack), now);
+            compressor.set_release_duration(seconds(limiter.release), now);
         }
+    }
+
+    /// Sets how the air dulls the emitters' sounds with distance; each follows at its next
+    /// [`Emitter::set_position`]. [`AudioPlugin`] calls it when the [`Air`] resource changes.
+    pub fn set_air(&self, air: &Air) {
+        let Some(output) = &self.output else {
+            return;
+        };
+        let output = output
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        output.air.store(air.far.to_bits(), Ordering::Relaxed);
     }
 
     /// Starts `sound`. The voice is silent if there is no device or the sound cannot be played.
@@ -406,6 +623,7 @@ impl Audio {
             track,
             room,
             outside,
+            ..
         }) = output.channel(playback.channel)
         else {
             return Voice::default();
@@ -461,13 +679,17 @@ impl Audio {
     /// ahead): heard fully within `near` and fading out to nothing at `far`, in the same units.
     /// Silent without a device or an ear.
     pub fn emitter(&self, at: &Vector3<Real>, near: Real, far: Real) -> Emitter {
-        self.placed(at, near, far, false)
+        self.placed(at, near, far, &Placing::default())
     }
 
     /// A place to play sounds from as [`emitter`](Self::emitter) gives, but in the room
     /// ([`Acoustics`], channel 0): heard through the reverb and never muffled as outside is.
     pub fn emitter_in_room(&self, at: &Vector3<Real>, near: Real, far: Real) -> Emitter {
-        self.placed(at, near, far, true)
+        let placing = Placing {
+            room: true,
+            ..Placing::default()
+        };
+        self.placed(at, near, far, &placing)
     }
 
     /// A place to play sounds from as [`emitter`](Self::emitter) gives (outside, channel 0),
@@ -479,26 +701,30 @@ impl Audio {
         far: Real,
         directional: &Directional,
     ) -> Emitter {
-        let mut emitter = self.placed_with(at, near, far, false, directional);
+        let placing = Placing {
+            directional: *directional,
+            ..Placing::default()
+        };
+        self.placed(at, near, far, &placing)
+    }
+
+    /// A place to play sounds from at `at` about the ear (x to the right, y up, −z ahead), heard
+    /// fully within `near` and fading out to nothing at `far`, in the same units, in the channel,
+    /// outside or in its room and as sharply placed as `placing` says; dulled with distance as the
+    /// [`Air`] says. Silent without a device or an ear.
+    pub fn placed(&self, at: &Vector3<Real>, near: Real, far: Real, placing: &Placing) -> Emitter {
+        let mut emitter = self.place(at, near, far, placing);
         emitter.set_position(at, 0.0);
         emitter
     }
 
-    /// An emitter on channel 0's outside track, or its room's when `in_room`.
-    fn placed(&self, at: &Vector3<Real>, near: Real, far: Real, in_room: bool) -> Emitter {
-        self.placed_with(at, near, far, in_room, &Directional::default())
-    }
-
-    /// An emitter on channel 0's outside track, or its room's when `in_room`, placed as
-    /// `directional` says.
-    fn placed_with(
-        &self,
-        at: &Vector3<Real>,
-        near: Real,
-        far: Real,
-        in_room: bool,
-        directional: &Directional,
-    ) -> Emitter {
+    /// An emitter as [`placed`](Self::placed) makes, its low-pass not yet set.
+    fn place(&self, at: &Vector3<Real>, near: Real, far: Real, placing: &Placing) -> Emitter {
+        let Placing {
+            room: in_room,
+            channel,
+            directional,
+        } = placing;
         let Some(output) = &self.output else {
             return Emitter::default();
         };
@@ -508,10 +734,11 @@ impl Audio {
         let Some(listener) = output.listener.as_ref().map(ListenerHandle::id) else {
             return Emitter::default();
         };
-        let Some(tracks) = output.channel(Channel::default()) else {
+        let air = output.air.clone();
+        let Some(tracks) = output.channel(*channel) else {
             return Emitter::default();
         };
-        let track = if in_room {
+        let track = if *in_room {
             tracks.room.as_mut().map(|(track, _)| track)
         } else {
             tracks.outside.as_mut().map(|(track, _)| track)
@@ -525,7 +752,8 @@ impl Audio {
                 max_distance: far.max(near + 1e-3) as f32,
             })
             .spatialization_strength(directional.pan.clamp(0.0, 1.0) as f32);
-        // One low-pass for the head's shadow behind it and for a muffle, whichever is lower.
+        // One low-pass for the head's shadow behind it, the air and a muffle, whichever is
+        // lowest.
         let filter = builder.add_effect(FilterBuilder::new().cutoff(Outside::OPEN));
         let behind = directional
             .behind
@@ -537,6 +765,8 @@ impl Audio {
                 behind,
                 muffle: Outside::OPEN,
                 at: *at,
+                reach: (near, far),
+                air: Some(air),
             },
             Err(error) => {
                 tracing::warn!("cannot place a sound: {error}");
@@ -552,6 +782,20 @@ fn mint_of(at: &Vector3<Real>) -> mint::Vector3<f32> {
         y: at.y as f32,
         z: at.z as f32,
     }
+}
+
+/// Where an emitter made by [`Audio::placed`] plays: its channel, outside or in that channel's
+/// room, and how sharply about the ear. The default is a plain [`Audio::emitter`]'s: outside, in
+/// channel 0.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Placing {
+    /// Whether its sounds are heard in the room ([`Acoustics`]) rather than outside
+    /// ([`Outside`]).
+    pub room: bool,
+    /// The channel it plays in ([`Volumes`], [`Mix`]).
+    pub channel: Channel,
+    /// How sharply it is placed about the ear.
+    pub directional: Directional,
 }
 
 /// How sharply a [`directional emitter`](Audio::directional_emitter) places its sounds about
@@ -605,6 +849,10 @@ pub struct Emitter {
     muffle: Real,
     /// Where it is about the ear.
     at: Vector3<Real>,
+    /// Its `near` and `far`.
+    reach: (Real, Real),
+    /// The [`Air`]'s cutoff at its far, as `f64` bits, shared with the output.
+    air: Option<Arc<AtomicU64>>,
 }
 
 impl Default for Emitter {
@@ -615,6 +863,8 @@ impl Default for Emitter {
             behind: None,
             muffle: Outside::OPEN,
             at: Vector3::zeros(),
+            reach: (1.0, 100.0),
+            air: None,
         }
     }
 }
@@ -645,12 +895,23 @@ impl Emitter {
         self.muffle
     }
 
-    fn filter_to(&mut self, fade: Real) {
+    /// The cutoff its sounds go through now: the head's shadow, the air and the muffle, whichever
+    /// is lowest.
+    pub fn cutoff(&self) -> Real {
         let shadow = self.behind.map_or(Outside::OPEN, |behind| {
             Directional::cutoff(&self.at, behind)
         });
+        let air = self.air.as_ref().map_or(Outside::OPEN, |air| {
+            let far = Real::from_bits(air.load(Ordering::Relaxed));
+            Air { far }.cutoff(self.at.norm(), self.reach.0, self.reach.1)
+        });
+        shadow.min(air).min(self.muffle)
+    }
+
+    fn filter_to(&mut self, fade: Real) {
+        let cutoff = self.cutoff();
         if let Some(filter) = &mut self.filter {
-            filter.set_cutoff(shadow.min(self.muffle), tween(fade));
+            filter.set_cutoff(cutoff, tween(fade));
         }
     }
 
@@ -911,14 +1172,63 @@ fn decibels_of(gain: Real) -> Decibels {
 
 fn tween(fade: Real) -> Tween {
     Tween {
-        duration: Duration::from_secs_f64(fade.max(0.0)),
+        duration: seconds(fade),
         ..Tween::default()
     }
+}
+
+/// `seconds` as a duration, none below 0.
+fn seconds(seconds: Real) -> Duration {
+    Duration::from_secs_f64(seconds.max(0.0))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_air_dulls_only_what_is_beyond_near() {
+        let air = Air { far: 2000.0 };
+        assert_eq!(air.cutoff(0.5, 1.0, 101.0), Outside::OPEN);
+        assert_eq!(air.cutoff(1.0, 1.0, 101.0), Outside::OPEN);
+        assert!((air.cutoff(101.0, 1.0, 101.0) - 2000.0).abs() < 1e-6);
+        assert!(
+            (air.cutoff(500.0, 1.0, 101.0) - 2000.0).abs() < 1e-6,
+            "held past far"
+        );
+        // Geometric: halfway, the geometric mean of open and the far cutoff.
+        let half = air.cutoff(51.0, 1.0, 101.0);
+        assert!((half - (Outside::OPEN * 2000.0).sqrt()).abs() < 1e-6);
+        assert_eq!(
+            Air::default().cutoff(80.0, 1.0, 101.0),
+            Outside::OPEN,
+            "none by default"
+        );
+    }
+
+    #[test]
+    fn the_mix_and_the_limiter_are_applied_without_a_device() {
+        let mut app = App::new();
+        app.insert_resource(Audio::silent()).add_plugin(AudioPlugin);
+        app.world_mut().resource_mut::<Mix>().channels[0] = Bus {
+            gain: 0.5,
+            cutoff: 800.0,
+        };
+        app.world_mut().resource_mut::<Limiter>().threshold = -6.0;
+        app.world_mut().resource_mut::<Air>().far = 3000.0;
+        app.update(0.1);
+        let placing = Placing {
+            channel: Channel(3),
+            ..Placing::default()
+        };
+        let emitter = app.world().resource::<Audio>().placed(
+            &Vector3::new(0.0, 0.0, -40.0),
+            1.0,
+            50.0,
+            &placing,
+        );
+        assert_eq!(emitter.cutoff(), Outside::OPEN, "silent: no air shared");
+    }
 
     #[test]
     fn an_emitter_is_muffled_within_hearing_and_opened_again() {
