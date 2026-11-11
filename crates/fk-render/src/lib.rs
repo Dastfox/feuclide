@@ -141,7 +141,7 @@ pub use normal_map::{
 };
 pub use offscreen::{Image, Offscreen, Paths};
 pub use overlay::Overlay;
-pub use parting::{MAX_PARTINGS, Part, Parting, SeeThrough};
+pub use parting::{Fading, MAX_PARTINGS, Part, Parting, SeeThrough};
 pub use portal::{
     MAX_PORTAL_CUTS, MAX_PORTAL_FORMS, PortalBudget, PortalView, PortalViews, RealmLighting,
     Region, Side,

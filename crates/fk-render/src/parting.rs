@@ -20,6 +20,25 @@ pub const MAX_PARTINGS: usize = 4;
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SeeThrough;
 
+/// How much of an entity is drawn, 1 whole to 0 gone, as an opacity: below 1 its surfaces are
+/// drawn with as many of their pixels as that share, a fixed 4 × 4 dither on the window's pixels
+/// (a screen door, as an opaque pass draws see-through; the settling pass, where on, blends it
+/// into a true transparency), what is behind showing through the others. At 0 it is not drawn.
+///
+/// Drawn while below 1 by the [`SeeThrough`] pipelines (built for it as for them), whose
+/// fragment stage discards, so that no other surface pays for it; the [`Parting`] leaves it whole
+/// meanwhile, and a mark in its colours' alpha (over 1) is lost meanwhile. It casts its shadow
+/// whole while at least half of it is drawn, none after; in the image of another eye it is drawn
+/// whole while at least half of it is, not at all after. A raster entity only.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct Fading(pub f32);
+
+impl Default for Fading {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
+
 /// One cone of the [`Parting`]: the directions from the eye within [`angle`](Self::angle) of
 /// [`direction`](Self::direction).
 #[derive(Clone, Copy, Debug, PartialEq)]

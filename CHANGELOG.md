@@ -9,6 +9,8 @@ Turn the hooks on once per clone: `git config core.hooksPath .githooks`.
 
 ## Unreleased
 
+- fk-render: `Fading`, an entity's opacity: below 1 drawn at that share of its pixels (a 4 × 4
+  dither) by the see-through pipelines, the parting leaving it whole meanwhile; at 0 not drawn.
 - fk-render: `ShinesThrough`, beside a `PointLight` (and its `Spot`): it lights too what each
   view seen through portals from its realm draws, carried where the portals on the way carry
   it, unshadowed there; `PortalView::through`, the realms and eyes of the views it is seen

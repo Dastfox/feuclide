@@ -169,24 +169,49 @@ fn clipped_fragment(in: Varyings) -> @location(0) vec4<f32> {
 }
 
 // The same for the surfaces marked to be seen through (`fk_render::SeeThrough`): cut away where
-// they stand in one of the parting's cones. Pipelines of their own, so that no other surface
-// ever discards.
+// they stand in one of the parting's cones; and for those fading (`fk_render::Fading`, the
+// colour's alpha below 1), drawn at that share of their pixels, whole by the parting meanwhile.
+// Pipelines of their own, so that no other surface ever discards.
 @fragment
 fn see_through_fragment(in: Varyings) -> @location(0) vec4<f32> {
-    if parted(in) {
+    if cut_away(in) {
         discard;
     }
-    return paint(in);
+    return paint(unfaded(in));
 }
 
 // Both: cut off at the view's clip plane and to its region, and cut away in the parting's
 // cones, for the surfaces to be seen through in a clipped view.
 @fragment
 fn clipped_see_through_fragment(in: Varyings) -> @location(0) vec4<f32> {
-    if !portal_keeps(in.point) || parted(in) {
+    if !portal_keeps(in.point) || cut_away(in) {
         discard;
     }
-    return paint(in);
+    return paint(unfaded(in));
+}
+
+// Whether a see-through fragment is not drawn: fading, left out of the share of the pixels that
+// are (a 4 × 4 ordered dither on the window's pixels); else in one of the parting's cones.
+fn cut_away(in: Varyings) -> bool {
+    let fade = abs(in.color.w);
+    if fade < 0.99 {
+        let pixel = vec2<u32>(in.clip.xy) % vec2<u32>(4u);
+        let bayer = array<f32, 16>(
+            0.0, 8.0, 2.0, 10.0,
+            12.0, 4.0, 14.0, 6.0,
+            3.0, 11.0, 1.0, 9.0,
+            15.0, 7.0, 13.0, 5.0,
+        );
+        return (bayer[pixel.y * 4u + pixel.x] + 0.5) / 16.0 >= fade;
+    }
+    return parted(in);
+}
+
+// A fading fragment as painted whole: its colour's alpha 1 again, its sign kept.
+fn unfaded(in: Varyings) -> Varyings {
+    var out = in;
+    out.color.w = select(-1.0, 1.0, in.color.w >= 0.0) * max(abs(in.color.w), 1.0);
+    return out;
 }
 
 // A hash of a cell of the mesh's space, in [0, 1].

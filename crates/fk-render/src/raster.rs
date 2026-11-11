@@ -18,7 +18,7 @@ use crate::elsewhere::{MAX_OTHER_EYES, SeenBy, ShowsElsewhere, ShowsOther};
 use crate::gpu::matrix_columns;
 use crate::mesh::{MeshInstances, Meshes, Vertex};
 use crate::normal_map::NormalMaps;
-use crate::parting::{Parting, SeeThrough};
+use crate::parting::{Fading, Parting, SeeThrough};
 use crate::quotient::{QuotientView, Unrepeated};
 use crate::renderer::{FrameBindings, FrameView, GeometryRenderer, Hidden, OnLayer, RendererSetup};
 use crate::spot::MAX_SPOT_SHADOWS;
@@ -80,8 +80,11 @@ struct Candidate<G: Geometry> {
     window: Option<usize>,
     /// Which eye draws it, if only one does.
     seen_by: Option<SeenBy>,
-    /// Cut away in the [`Parting`]'s cones: [`SeeThrough`], while the parting cuts.
+    /// Drawn by the see-through pipelines: cut away in the [`Parting`]'s cones
+    /// ([`SeeThrough`], while the parting cuts), or [`Fading`].
     see_through: bool,
+    /// How much of it is drawn, below 1 dithered ([`Fading`]); 1 whole.
+    fade: f32,
 }
 
 /// Which pipelines draw a bin's instances, and of what mesh: the slot, whether they are seen
@@ -308,10 +311,17 @@ type Drawables<G> = (
     Option<&'static SeenBy>,
     Has<SeeThrough>,
     Option<&'static GlobalRealm>,
+    Option<&'static Fading>,
 );
 
-/// The deforms of the entities to be seen through.
-type SeeThroughQuery = QueryState<Option<&'static Deform>, (With<SeeThrough>, Without<Hidden>)>;
+/// The deforms of the entities to be seen through, or fading.
+type SeeThroughQuery = QueryState<
+    Option<&'static Deform>,
+    (
+        bevy_ecs::query::Or<(With<SeeThrough>, With<Fading>)>,
+        Without<Hidden>,
+    ),
+>;
 
 /// Draws every [`MeshInstances`] with classic rasterization and the geometry's projection.
 ///
@@ -507,8 +517,8 @@ impl<G: GpuGeometry> RasterPipeline<G> {
         }
     }
 
-    /// Builds the see-through pipelines of every deform an entity marked [`SeeThrough`] is
-    /// drawn through and that has none yet.
+    /// Builds the see-through pipelines of every deform an entity marked [`SeeThrough`] or
+    /// [`Fading`] is drawn through and that has none yet.
     fn compile_see_through(&mut self, world: &mut World) {
         let query = self
             .see_through_query
@@ -868,8 +878,14 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
             seen_by,
             see_through,
             realm,
+            fading,
         ) in query.iter(world)
         {
+            // Faded to nothing: not drawn at all, nor its shadow.
+            let fade = fading.map_or(1.0, |fading| fading.0.clamp(0.0, 1.0));
+            if fade <= 0.0 {
+                continue;
+            }
             // Another realm's: never drawn here.
             if realm.map_or(Realm::MAIN, |realm| realm.0) != view.realm {
                 continue;
@@ -887,11 +903,17 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                 Some(Some(_)) => slot,
                 _ => 0,
             };
-            // Seen through while the parting cuts, its pipelines built; whole otherwise.
-            let see_through = see_through
-                && cuts
-                && window.is_none()
-                && seen_through.get(slot as usize).copied().unwrap_or(false);
+            // In another eye's image whole while at least half of it is drawn, not at all after.
+            if window.is_some() && fade < 0.5 {
+                continue;
+            }
+            // Seen through while the parting cuts, or fading, its pipelines built; whole
+            // otherwise.
+            let built =
+                window.is_none() && seen_through.get(slot as usize).copied().unwrap_or(false);
+            // Past 0.99 whole: the fragments read an alpha a hair under 1 as 1.
+            let fade = if built && fade < 0.99 { fade } else { 1.0 };
+            let see_through = built && ((see_through && cuts) || fade < 1.0);
             let copies = if unrepeated || window.is_some() {
                 &[][..]
             } else {
@@ -906,11 +928,12 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                         relative: relative.compose(&instance.pose),
                         color: instance.color.to_array(),
                         data: instance.data,
-                        casts: !casts_none && window.is_none(),
+                        casts: !casts_none && window.is_none() && fade >= 0.5,
                         layer,
                         window,
                         seen_by: seen_by.copied(),
                         see_through,
+                        fade,
                     });
                 }
             }
@@ -1003,7 +1026,8 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
             } else {
                 light_mask::<G>(&self.lights, &centre, radius)
             };
-            // The colour's alpha is the image's alpha on the surface, 1 at least.
+            // The colour's alpha is the image's alpha on the surface, 1 at least; below 1 how much
+            // of it is drawn, fading (the see-through fragments paint it with 1).
             let mut instance = GpuInstance {
                 iso: matrix_columns(&G::isometry_matrix(&candidate.relative)),
                 color: candidate.color,
@@ -1011,6 +1035,10 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                 lights,
             };
             instance.color[3] = instance.color[3].max(1.0);
+            let cast = instance;
+            if candidate.fade < 1.0 {
+                instance.color[3] = candidate.fade.max(1e-3);
+            }
             let key = (candidate.slot, candidate.see_through, candidate.mesh);
             // The shadows are cast whole, alongside the rest's.
             let cast_key = (candidate.slot, false, candidate.mesh);
@@ -1038,7 +1066,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                 }
             }
             if casts {
-                self.shadow_bins.entry(cast_key).or_default().push(instance);
+                self.shadow_bins.entry(cast_key).or_default().push(cast);
             }
             while spots != 0 {
                 let layer = spots.trailing_zeros() as usize;
@@ -1046,7 +1074,7 @@ impl<G: GpuGeometry> GeometryRenderer<G> for RasterPipeline<G> {
                 self.spot_bins[layer]
                     .entry(cast_key)
                     .or_default()
-                    .push(instance);
+                    .push(cast);
             }
         }
         // Kept from frame to frame, so that its megabyte is not allocated anew each frame.
@@ -1654,6 +1682,71 @@ mod tests {
         assert_eq!(pixel(&near, cx, cy)[3], 255, "nearer than its near, whole");
         let none = wall(true, Parting::default());
         assert_eq!(none, plain, "no parting, exactly as without");
+    }
+
+    /// Headless: a fading wall is drawn at that share of its pixels, the sky through the
+    /// others; whole at 1, gone at 0; the parting leaves it whole meanwhile.
+    #[test]
+    fn a_fading_wall_shows_the_sky_through_its_share() {
+        let Some(gpu) = Gpu::headless() else {
+            eprintln!("no adapter, skipped");
+            return;
+        };
+        let wall = |fade: Option<f32>, parting: Parting| {
+            let mut world = World::new();
+            let mut meshes = Meshes::default();
+            let wall = meshes.add(shapes::cuboid(Vector3::new(6.0, 6.0, 0.05)).build::<E3>());
+            world.insert_resource(meshes);
+            world.insert_resource(parting);
+            let ahead = Isometry::exp(&E3::transvection(&Vector3::new(0.0, 0.0, -4.0)));
+            let entity = world
+                .spawn((
+                    ViewRelative::<E3>(ahead),
+                    MeshInstances::<E3>::single(wall, Color::WHITE),
+                ))
+                .id();
+            if let Some(fade) = fade {
+                world.entity_mut(entity).insert(Fading(fade));
+            }
+            let eye = world
+                .spawn(GlobalPose::<E3>::new(Isometry::identity()))
+                .id();
+            draw(&gpu, &mut world, eye, &Lighting::default(), None)
+        };
+        let (cx, cy) = (SIZE.0 / 2, SIZE.1 / 2);
+        let drawn = |image: &[u8]| {
+            let mut n = 0;
+            for y in cy - 8..cy + 8 {
+                for x in cx - 8..cx + 8 {
+                    n += usize::from(pixel(image, x, y)[3] == 255);
+                }
+            }
+            n
+        };
+        let whole = wall(None, Parting::default());
+        assert_eq!(drawn(&whole), 256);
+        assert_eq!(
+            wall(Some(1.0), Parting::default()),
+            whole,
+            "at 1 as without"
+        );
+        let half = drawn(&wall(Some(0.5), Parting::default()));
+        assert!((112..=144).contains(&half), "about half: {half}");
+        let quarter = drawn(&wall(Some(0.25), Parting::default()));
+        assert!((48..=80).contains(&quarter), "about a quarter: {quarter}");
+        assert_eq!(drawn(&wall(Some(0.0), Parting::default())), 0, "gone at 0");
+        let cone = Part {
+            direction: -Vector3::z(),
+            angle: 0.2,
+            ragged: 0.0,
+            cell: 1.0,
+            near: 1.0,
+        };
+        let parted = drawn(&wall(Some(0.5), Parting(vec![cone])));
+        assert!(
+            (112..=144).contains(&parted),
+            "the parting leaves it: {parted}"
+        );
     }
 
     /// Headless: a point light a metre before a wall the sun is behind lights it, most where it
